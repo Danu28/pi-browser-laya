@@ -14,6 +14,7 @@ export interface Snapshot {
   text: string; fullTextLength?: number; actions: any[]; marker: any; page_key: any;
   guards: Record<string, any>; omitted_actions: number;
   scroll: { y: number; height: number }; fingerprint: string;
+  dialog?: { type: string; message: string; defaultValue?: string } | null;
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -36,6 +37,7 @@ export class Browser {
   private context: any = null;
   private page: any = null;
   private snapshotJs = "";
+  private lastDialog: { type: string; message: string; defaultValue?: string } | null = null;
 
   async launch(url: string, headed = true): Promise<Snapshot> {
     // lazy load playwright — single dependency user must install: npm i playwright && npx playwright install chromium
@@ -68,6 +70,11 @@ export class Browser {
       deviceScaleFactor: 1,
     });
     this.page = await this.context.newPage();
+    // Native dialog handler — auto-accept and expose to LLM (fixes P0 #1 dialog destroyed)
+    this.page.on("dialog", async (dialog: any) => {
+      this.lastDialog = { type: dialog.type(), message: dialog.message(), defaultValue: dialog.defaultValue() };
+      try { await dialog.accept(dialog.defaultValue() || undefined); } catch { try { await dialog.dismiss(); } catch {} }
+    });
 
     // Navigate and wait till load completely
     await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
@@ -100,6 +107,8 @@ export class Browser {
     snap.scroll = snap.scroll ?? { y: 0, height: 0 };
     snap.omitted_actions = snap.omitted_actions ?? 0;
     snap.fingerprint = snap.fingerprint ?? String(Date.now());
+    snap.dialog = this.lastDialog;
+    if (this.lastDialog) this.lastDialog = null; // consume once
     return snap as Snapshot;
   }
 

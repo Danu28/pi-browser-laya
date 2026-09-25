@@ -8,7 +8,13 @@
   for (const [id, e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
   const safe = (e) => !['hidden'].includes(e.type); // allow file+password (general); file handled as kind=file
   const visible = (e) => {
-    try { return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); } catch { return true; }
+    try {
+      // Allow dialog/modal descendants even if ancestor is aria-hidden (fixes modal × not in table P0 #2)
+      const inDialog = !!e.closest('dialog[open],[role="dialog"],.modal[style*="display: block"],.modal.show');
+      const hiddenAncestor = e.closest('[aria-hidden="true"],[inert]');
+      if (hiddenAncestor && !inDialog && !hiddenAncestor.closest('dialog[open],[role="dialog"]')) return false;
+      return e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+    } catch { return true; }
   };
   const name = (e, seen=new Set()) => {
     if (!e || seen.has(e)) return '';
@@ -63,12 +69,14 @@
   }
   const actions=[];
   const addAction = (e) => {
-    if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) return;
+    if(!safe(e)||!visible(e)) return;
+    const isDisabled = e.matches(':disabled') || !!e.closest('[aria-disabled="true"]');
+    // Include disabled elements but mark them (fixes #10 Disabled→Enabled signal) — don't skip, just annotate
     const r=e.getBoundingClientRect(), rname=role(e);
     if(!rname||r.width<=0||r.height<=0) return;
     if(rname==='gridcell'&&e.querySelector('button,[role="button"]')) return;
     const onscreen = r.top < innerHeight && r.bottom > 0 && r.left < innerWidth && r.right > 0;
-    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen, frame: e.ownerDocument !== document ? 'iframe/shadow' : ''};
+    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen, frame: e.ownerDocument !== document ? 'iframe/shadow' : '', disabled: isDisabled ? 'true' : undefined, validationMessage: e.validationMessage || undefined};
     for(const k of ['checked','selected','expanded']){const v=e.getAttribute('aria-'+k); if(v!==null) base[k]=v;}
     if(['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
     if(e.type==='file'){

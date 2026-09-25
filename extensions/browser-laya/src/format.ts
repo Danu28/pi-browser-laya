@@ -7,14 +7,19 @@ export function formatSnapshot(snap: Snapshot): string {
   lines.push(`URL: ${snap.url}`);
   lines.push(`Title: ${snap.title}`);
   lines.push(`Viewport: ${snap.w}x${snap.h}  Scroll: ${snap.scroll.y}/${snap.scroll.height}  Elements: ${snap.actions.length} (omitted ${snap.omitted_actions})  Text: ${snap.text.length}/${len}${truncated ? " TRUNCATED" : ""}`);
+  if ((snap as any).dialog) {
+    const d=(snap as any).dialog;
+    lines.push(`DIALOG: ${d.type} — "${d.message}"${d.defaultValue?` (default: ${d.defaultValue})`:""} — auto-accepted, next snapshot will clear`);
+  }
   lines.push("");
   lines.push(`=== PAGE TEXT (12k, ALL visible incl. offscreen) ${truncated ? `(page is ${len} chars, truncated)` : ""} ===`);
   lines.push(snap.text || "(no visible text)");
   if (truncated) lines.push(`\n[Text truncated: showing 0..${snap.text.length} of ${len}. Use browser_text with {query, offset, blockIndex} to fetch remaining content live.]`);
   lines.push("");
-  lines.push("=== ELEMENT TABLE — ALL visible elements (onscreen + offscreen + shadow/iframe) ===");
-  lines.push("Format: [id] role  label  (kind)  [y=px onscreen?/frame?]  — offscreen/shadow/iframe elements are clickable (auto scrollIntoView)");
-  lines.push("FILL vs CLICK: kind=fill → browser_act {\"id\":\"eXX\",\"text\":\"value\"}  kind=click/select → browser_act {\"id\":\"eXX\"}");
+  lines.push("=== ELEMENT TABLE — ALL visible elements (onscreen + offscreen + shadow/iframe, open only) ===");
+  lines.push("Format: [id] role  label  (kind)  [y=px onscreen?/frame? disabled? validation?] — offscreen/shadow/iframe are clickable");
+  lines.push("FILL vs CLICK: kind=fill → browser_act {\"id\":\"eXX\",\"text\":\"value\"}  kind=click/select/file → browser_act {\"id\":\"eXX\"}");
+  lines.push("Note: closed shadow DOM (mode:closed) cannot be pierced — 0 elements is expected for those variants.");
   if (!snap.actions || snap.actions.length === 0) lines.push("(no interactive elements visible)");
   else for (const a of snap.actions) {
     const role = String(a.role ?? a.kind ?? "unknown");
@@ -26,7 +31,9 @@ export function formatSnapshot(snap: Snapshot): string {
     const vis = a.onscreen === false ? " offscreen" : a.onscreen === true ? " onscreen" : "";
     const frame = a.frame ? ` ${a.frame}` : "";
     const fillHint = kind === "fill" ? " ← FILL" : "";
-    lines.push(`[${a.id}] ${role.padEnd(10)} ${label.slice(0, 80)}${val}${extra} (${kind})${y}${vis}${frame}${fillHint}`);
+    const disabled = a.disabled ? " disabled" : "";
+    const vmsg = a.validationMessage ? ` validation:"${String(a.validationMessage).slice(0,60)}"` : "";
+    lines.push(`[${a.id}] ${role.padEnd(10)} ${label.slice(0, 80)}${val}${extra} (${kind})${y}${vis}${frame}${fillHint}${disabled}${vmsg}`);
   }
   lines.push("");
   lines.push("=== GENERAL WORKFLOW (any site, any form, shadow/iframe) ===");
