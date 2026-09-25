@@ -6,7 +6,7 @@
     const id = cache.ids.get(e); cache.nodes.set(id, e); return id;
   };
   for (const [id, e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
-  const safe = (e) => !['file','hidden'].includes(e.type); // allow password for dummy forms (general); jev excluded it for safety
+  const safe = (e) => !['hidden'].includes(e.type); // allow file+password (general); file handled as kind=file
   const visible = (e) => {
     try { return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); } catch { return true; }
   };
@@ -27,6 +27,7 @@
     if(e.tagName==='INPUT'){
       if(['checkbox','radio'].includes(e.type)) return e.type;
       if(['button','submit','reset','image'].includes(e.type)) return 'button';
+      if(e.type==='file') return 'button'; // file upload
       if(e.type==='search') return 'searchbox';
       if(e.type==='number') return 'spinbutton';
       if(['text','email','url','tel','password'].includes(e.type)) return 'textbox';
@@ -70,14 +71,18 @@
     const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen, frame: e.ownerDocument !== document ? 'iframe/shadow' : ''};
     for(const k of ['checked','selected','expanded']){const v=e.getAttribute('aria-'+k); if(v!==null) base[k]=v;}
     if(['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    if(e.type==='file'){
+      actions.push({...base,kind:'file',value:'',label:base.label+' (file upload)'});
+      return;
+    }
     if(e.tagName==='SELECT'){
       for(const o of e.options) if(!o.selected&&!o.disabled&&!o.closest('optgroup[disabled]')) actions.push({...base,kind:'select',value:o.value,current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
       // General: allow programmatic fill even if readonly (e.g. SelectorsHub email readonly until focus) — we set value via JS
       const editable=e.getAttribute('aria-readonly')!=='true'&&(['textbox','searchbox','spinbutton'].includes(rname)||(rname==='combobox'&&['INPUT','TEXTAREA'].includes(e.tagName)));
       const value='value' in e?String(e.value):e.isContentEditable||rname==='combobox'?e.innerText.trim():'';
+      // Keep single action per element (fill OR click) to save cap — no duplicate "Open "
       actions.push({...base,kind:editable?'fill':'click',value});
-      if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   };
   for (const root of roots) {
@@ -106,9 +111,17 @@
   const height=document.documentElement.scrollHeight;
   const page_key=cache.pageKey(), guards={};
   for(const a of actions) if(!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
+  // Prioritize critical inputs before capping: fill/select first, then onscreen before offscreen, so 800-el pages keep forms
+  actions.sort((a,b)=>{
+    const prio={fill:0,select:1};
+    const pa=prio[a.kind]??2, pb=prio[b.kind]??2;
+    if(pa!==pb) return pa-pb;
+    if(a.onscreen!==b.onscreen) return a.onscreen ? -1 : 1;
+    return (a.rect?.y??0)-(b.rect?.y??0);
+  });
   const semantics=actions.map(({rect,onscreen,frame,...a})=>a);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,document.title,text,semantics,page_key[6]];
-  const omitted=Math.max(0,actions.length-400); actions.splice(400); // 400 cap (was 250) to keep Password etc. for complex pages
+  const omitted=Math.max(0,actions.length-400); actions.splice(400); // 400 cap with priority
   actions.forEach((a,i)=>a.id='e'+(i+1));
   if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560, role:'scroll'});
   if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560, role:'scroll'});

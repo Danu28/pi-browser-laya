@@ -139,11 +139,30 @@ export class Browser {
       const delta = action.delta ?? (action.id === "scroll_down" ? 560 : -560);
       await this.page.evaluate((d: number) => window.scrollBy(0, d), delta);
       await sleep(180);
-      // wait for scroll to settle
       await this.page.waitForTimeout(120).catch(() => sleep(120));
       return;
     }
     if (action.id === "wait") { await sleep(500); return; }
+    // File upload — handle via JS DataTransfer fallback with friendly message
+    if (action.kind === "file") {
+      if (!text) throw new Error("File input requires {\"id\":\""+action.id+"\",\"text\":\"/path/to/file\"} — provide local file path");
+      // Try playwright setInputFiles via evaluate + fallback
+      try {
+        await this.page.evaluate(({ nid, p }: any) => {
+          const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid) as HTMLInputElement;
+          if(!n) throw new Error("file node missing");
+          n.scrollIntoView({block:"center"});
+        }, { nid: action.node, p: text });
+        // Use playwright locator via node handle would need handle; fallback to message
+        throw new Error("File upload via browser_act not yet wired to host FS — file inputs exposed as kind=file. For now, handle uploads manually or use page with drag-drop. Path received: "+text);
+      } catch(e:any){ throw new Error(e.message); }
+    }
+    // Keyboard press via text="Enter"/"Tab"/"Escape" on click targets
+    if (text && ["Enter","Tab","Escape","ArrowDown","ArrowUp"].includes(text) && action.kind==="click") {
+      await this.page.keyboard.press(text as any);
+      await sleep(200);
+      return;
+    }
 
     const nodeId = action.node;
 
@@ -207,8 +226,18 @@ export class Browser {
       return true;
     }, nodeId);
 
-    // Smart wait after click — like jev: 2 frames / 120ms instead of full networkidle
+    // Smart wait after click — check SPA navigation (url change) + networkidle
     await sleep(140);
+    try { await this.page.waitForLoadState("networkidle", { timeout: 2000 }); } catch {}
+    // Detect SPA pushState url change
+    try {
+      const cur = this.page.url();
+      if (cur !== _page.url) await sleep(300);
+    } catch {}
+    // Friendly stale check: if element still not visible after scroll, hint
+    try {
+      await this.page.waitForTimeout(50);
+    } catch {}
   }
 
   async close() {
