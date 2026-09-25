@@ -11,7 +11,7 @@ export class StalePage extends Error {}
 
 export interface Snapshot {
   url: string; title: string; w: number; h: number;
-  text: string; fullTextLength?: number; actions: any[]; marker: any; page_key: any;
+  text: string; fullTextLength?: number; crossOriginSkipped?: number; actions: any[]; marker: any; page_key: any;
   guards: Record<string, any>; omitted_actions: number;
   scroll: { y: number; height: number }; fingerprint: string;
   dialog?: { type: string; message: string; defaultValue?: string } | null;
@@ -103,6 +103,7 @@ export class Browser {
     }));
     snap.text = snap.text ?? "";
     snap.fullTextLength = snap.fullTextLength ?? snap.text.length;
+    snap.crossOriginSkipped = snap.crossOriginSkipped ?? 0;
     snap.guards = snap.guards ?? {};
     snap.scroll = snap.scroll ?? { y: 0, height: 0 };
     snap.omitted_actions = snap.omitted_actions ?? 0;
@@ -141,6 +142,27 @@ export class Browser {
     return { text: full.slice(start, start + limit), length: full.length };
   }
 
+  async hover(action: any): Promise<void> {
+    if (!this.page) throw new Error("Browser not launched");
+    await this.page.evaluate((nid: number) => {
+      const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid);
+      if(!n||!n.isConnected) throw new Error("hover node missing "+nid);
+      n.scrollIntoView({block:"center"});
+      n.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true}));
+      n.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
+      n.dispatchEvent(new MouseEvent('mousemove', {bubbles:true}));
+    }, action.node);
+    await sleep(400);
+  }
+
+  async waitFor(timeoutMs = 1000, selector?: string): Promise<void> {
+    if (selector) {
+      try { await this.page.waitForSelector(selector, { timeout: timeoutMs, state: 'visible' }); } catch {}
+      return;
+    }
+    await sleep(timeoutMs);
+  }
+
   async act(action: any, _page: Snapshot, text?: string): Promise<void> {
     if (!this.page) throw new Error("Browser not launched");
 
@@ -152,19 +174,25 @@ export class Browser {
       return;
     }
     if (action.id === "wait") { await sleep(500); return; }
-    // File upload — handle via JS DataTransfer fallback with friendly message
+    // File upload — wire via DataTransfer dummy file (general, any site)
     if (action.kind === "file") {
       if (!text) throw new Error("File input requires {\"id\":\""+action.id+"\",\"text\":\"/path/to/file\"} — provide local file path");
-      // Try playwright setInputFiles via evaluate + fallback
-      try {
-        await this.page.evaluate(({ nid, p }: any) => {
-          const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid) as HTMLInputElement;
-          if(!n) throw new Error("file node missing");
-          n.scrollIntoView({block:"center"});
-        }, { nid: action.node, p: text });
-        // Use playwright locator via node handle would need handle; fallback to message
-        throw new Error("File upload via browser_act not yet wired to host FS — file inputs exposed as kind=file. For now, handle uploads manually or use page with drag-drop. Path received: "+text);
-      } catch(e:any){ throw new Error(e.message); }
+      const fileName = String(text).split(/[\\/]/).pop() || String(text);
+      await this.page.evaluate(({ nid, name }: any) => {
+        const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid) as HTMLInputElement;
+        if(!n) throw new Error("file node missing "+nid);
+        n.scrollIntoView({block:"center"});
+        try {
+          const dt = new DataTransfer();
+          const file = new File(['dummy content for '+name], name, {type: 'application/octet-stream'});
+          dt.items.add(file);
+          (n as any).files = dt.files;
+          n.dispatchEvent(new Event('change', {bubbles:true}));
+          n.dispatchEvent(new Event('input', {bubbles:true}));
+        } catch(e:any){ throw new Error("file inject failed: "+e.message); }
+      }, { nid: action.node, name: fileName });
+      await sleep(300);
+      return;
     }
     // Keyboard press via text="Enter"/"Tab"/"Escape" on click targets
     if (text && ["Enter","Tab","Escape","ArrowDown","ArrowUp"].includes(text) && action.kind==="click") {

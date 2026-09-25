@@ -47,6 +47,7 @@
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
   // Collect all roots: document, shadowRoots, same-origin iframes (handles selectorshub shadow/iframe practice page)
+  let crossOriginSkipped=0;
   const roots = [];
   const seenRoots = new Set();
   const queue = [document];
@@ -63,7 +64,8 @@
         try {
           const doc = el.contentDocument;
           if (doc) queue.push(doc);
-        } catch {}
+          else if (el.src && el.src !== 'about:blank') crossOriginSkipped++;
+        } catch { crossOriginSkipped++; }
       }
     }
   }
@@ -134,5 +136,5 @@
   if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560, role:'scroll'});
   if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560, role:'scroll'});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update', role:'wait'});
-  return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,fullTextLength,scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions:omitted,fingerprint:JSON.stringify(marker).slice(0,64)};
+  return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,fullTextLength,crossOriginSkipped,scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions:omitted,fingerprint:JSON.stringify(marker).slice(0,64)};
 })()

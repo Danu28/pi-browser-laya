@@ -7,6 +7,8 @@ import {
   browserLaunchTool,
   browserSnapshotTool,
   browserActTool,
+  browserHoverTool,
+  browserWaitTool,
   browserExtractTool,
   browserTextTool,
   browserCloseTool,
@@ -16,6 +18,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserLaunchTool);
   pi.registerTool(browserSnapshotTool);
   pi.registerTool(browserActTool);
+  pi.registerTool(browserHoverTool);
+  pi.registerTool(browserWaitTool);
   pi.registerTool(browserExtractTool);
   pi.registerTool(browserTextTool);
   pi.registerTool(browserCloseTool);

@@ -7,6 +7,7 @@ export function formatSnapshot(snap: Snapshot): string {
   lines.push(`URL: ${snap.url}`);
   lines.push(`Title: ${snap.title}`);
   lines.push(`Viewport: ${snap.w}x${snap.h}  Scroll: ${snap.scroll.y}/${snap.scroll.height}  Elements: ${snap.actions.length} (omitted ${snap.omitted_actions})  Text: ${snap.text.length}/${len}${truncated ? " TRUNCATED" : ""}`);
+  if ((snap as any).crossOriginSkipped) lines.push(`Note: ${ (snap as any).crossOriginSkipped} cross-origin iframe(s) skipped (CORS, opaque) — not pierceable, expected.`);
   if ((snap as any).dialog) {
     const d=(snap as any).dialog;
     lines.push(`DIALOG: ${d.type} — "${d.message}"${d.defaultValue?` (default: ${d.defaultValue})`:""} — auto-accepted, next snapshot will clear`);
@@ -37,12 +38,13 @@ export function formatSnapshot(snap: Snapshot): string {
   }
   lines.push("");
   lines.push("=== GENERAL WORKFLOW (any site, any form, shadow/iframe) ===");
-  lines.push('1) browser_launch → full snapshot (12k text + element table with y/frame + fill markers). Offscreen/shadow/iframe elements listed and clickable.');
+  lines.push('1) browser_launch → full snapshot (12k text + element table with y/frame + fill/disabled/validation). Offscreen/shadow/iframe (open) listed and clickable.');
   lines.push('2) Form fill: browser_act [{"id":"eXX","text":"value"}] for kind=fill; batch multiple fills in ONE call e.g. [{"id":"e3","text":"test@example.com"},{"id":"e5","text":"pass"}]');
-  lines.push('   Click/select: browser_act [{"id":"eXX"}] (auto scrolls) → re-snapshot. Batch up to 3.');
-  lines.push('3) For expanded content: browser_extract {"target":"eXX"}');
-  lines.push('4) For long-page/beyond-12k text: browser_text {"query":"<phrase>"} or {"offset":-5000} or {"blockIndex":10}');
-  lines.push('Example Dummy Form (generic): brower_act [{"id":"e5","text":"john@example.com"},{"id":"e7","text":"Secret123"},{"id":"e22"}] → submit in 2 calls.');
+  lines.push('   Click/select: browser_act [{"id":"eXX"}] (auto scrolls) → re-snapshot. Batch up to 3. File: browser_act [{"id":"eXX","text":"/path/file"}] (kind=file via DataTransfer).');
+  lines.push('   Hover/transient: browser_hover {"id":"eXX"} then browser_wait {"timeout":800} for dropdown/1-sec loader.');
+  lines.push('3) For expanded content: browser_extract {"target":"eXX"} + validationMessage per element if HTML5 invalid.');
+  lines.push('4) For long-page/beyond-12k text: browser_text {"query":"<phrase>"} (case-insensitive) or {"offset":-5000} or {"blockIndex":10}');
+  lines.push('Example: browser_act [{"id":"e5","text":"a@b.com"},{"id":"e7","text":"Secret123"},{"id":"e22"}] → submit. Dialogs auto-accepted and shown as DIALOG banner.');
   lines.push('Do not use fetch/web_search for live page content; do not loop scroll.');
   lines.push(`Fingerprint: ${snap.fingerprint}`);
   return lines.join("\n");

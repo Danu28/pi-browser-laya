@@ -88,6 +88,43 @@ export const browserActTool = defineTool({
   },
 });
 
+// ---------- browser_hover — for transient dropdowns / hover menus ----------
+export const browserHoverTool = defineTool({
+  name: "browser_hover",
+  label: "Browser Hover",
+  description: "Hover over element to reveal transient dropdown/loader (1-sec spinner, hover menus). Uses mouseover/mouseenter. For dropdown whose element disappears on inspect, hover then quickly browser_snapshot.",
+  parameters: Type.Object({
+    id: Type.String({ description: "Element id e1..e250 to hover" }),
+  }),
+  async execute(_id: any, params: any) {
+    const b = getBrowser();
+    const snap = lastSnapshot ?? await b.observe();
+    const action = snap.actions.find((x:any)=>x.id===params.id);
+    if (!action) throw new Error(`Unknown ${params.id}`);
+    await b.hover(action);
+    const next = await b.observe();
+    lastSnapshot = next;
+    return { content: [{ type: "text", text: formatSnapshot(next) }], details: { hovered: params.id } } as any;
+  },
+});
+
+export const browserWaitTool = defineTool({
+  name: "browser_wait",
+  label: "Browser Wait",
+  description: "Wait for transient content: timeout ms or waitForSelector. Use for 1-sec Spin Loader that disappears, or waiting for dropdown to appear after hover. Do not loop scroll.",
+  parameters: Type.Object({
+    timeout: Type.Optional(Type.Number({ description: "Ms to wait (default 1000, max 5000)" })),
+    selector: Type.Optional(Type.String({ description: "CSS selector to wait for visible (e.g. \"[role=option]\")" })),
+  }),
+  async execute(_id: any, params: any) {
+    const b = getBrowser();
+    await b.waitFor(params.timeout ?? 1000, params.selector);
+    const snap = await b.observe();
+    lastSnapshot = snap;
+    return { content: [{ type: "text", text: formatSnapshot(snap) }], details: { waited: params.timeout ?? 1000 } } as any;
+  },
+});
+
 // ---------- browser_extract ----------
 export const browserExtractTool = defineTool({
   name: "browser_extract",
