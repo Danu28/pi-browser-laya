@@ -29,6 +29,13 @@ export default tseslint.config(
     },
   },
   {
+    files: ["extensions/browser-laya/src/snapshot.js"],
+    rules: {
+      "no-unused-expressions": "off",
+      "@typescript-eslint/no-unused-expressions": "off",
+    },
+  },
+  {
     files: ["**/*.ts"],
     languageOptions: {
       ecmaVersion: 2022,

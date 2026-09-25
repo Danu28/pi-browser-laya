@@ -30,8 +30,14 @@ export const browserLaunchTool = defineTool({
     timeout: Type.Optional(
       Type.Number({ description: "Navigation timeout ms (default 30000, max 60000)" })
     ),
+    query: Type.Optional(
+      Type.String({
+        description:
+          "Optional relevance query for 50k pages — ranks best 12k by TF-IDF + headings (next to 10). E.g. 'pricing disclaimer' keeps relevant blocks, not just head.",
+      })
+    ),
   }),
-  async execute(_id, params) {
+  async execute(_id: any, params: any) {
     if (browser) {
       try {
         await browser.close();
@@ -39,7 +45,12 @@ export const browserLaunchTool = defineTool({
       browser = null;
     }
     browser = new Browser();
-    const snap = await browser.launch(params.url, params.headed ?? true, params.timeout ?? 30000);
+    const snap = await browser.launch(
+      params.url,
+      params.headed ?? true,
+      params.timeout ?? 30000,
+      params.query
+    );
     lastSnapshot = snap;
     return {
       content: [{ type: "text", text: formatSnapshot(snap) }],
@@ -58,14 +69,23 @@ export const browserSnapshotTool = defineTool({
   name: "browser_snapshot",
   label: "Browser Snapshot",
   description:
-    "Re-observe full page atomically (one evaluate). Returns updated 12k text + element table.",
-  parameters: Type.Object({}),
-  async execute() {
+    "Re-observe full page atomically (one evaluate). Returns ranked 12k (50k→best 12k, heading+TF-IDF) + element table. Use compact:true for 250+ els, query:'...' for relevance ranking.",
+  parameters: Type.Object({
+    compact: Type.Optional(
+      Type.Boolean({ description: "Compact element table (saves tokens, auto on 250+ els)" })
+    ),
+    query: Type.Optional(
+      Type.String({
+        description: "Relevance query — re-ranks 50k page to best 12k (TF-IDF + headings)",
+      })
+    ),
+  }),
+  async execute(_id: any, params: any) {
     const b = getBrowser();
-    const snap = await b.observe();
+    const snap = await b.observe(params?.query);
     lastSnapshot = snap;
     return {
-      content: [{ type: "text", text: formatSnapshot(snap) }],
+      content: [{ type: "text", text: formatSnapshot(snap, { compact: params?.compact }) }],
       details: { url: snap.url, actions: snap.actions.length },
     };
   },
@@ -85,11 +105,17 @@ export const browserActTool = defineTool({
       }),
       { description: "Batch 1-5 (was 3)" }
     ),
+    compact: Type.Optional(
+      Type.Boolean({ description: "Compact element table (auto on 250+ els)" })
+    ),
+    query: Type.Optional(
+      Type.String({ description: "Relevance query for post-act re-observe (50k→ranked 12k)" })
+    ),
   }),
-  async execute(_id, params) {
+  async execute(_id: any, params: any) {
     const b = getBrowser();
-    if (!lastSnapshot) lastSnapshot = await b.observe();
-    const snap = lastSnapshot;
+    if (!lastSnapshot) lastSnapshot = await b.observe(params?.query);
+    const snap = lastSnapshot!;
     for (const a of params.actions) {
       const action = snap.actions.find((x: any) => x.id === a.id);
       const target =
@@ -110,7 +136,7 @@ export const browserActTool = defineTool({
         );
       await b.act(target, snap, a.text);
     }
-    const next = await b.observe();
+    const next = await b.observe(params?.query);
     lastSnapshot = next;
     // Toggle feedback — compare checkbox/radio checked before/after for diff hint
     let diffNote = "";
@@ -126,7 +152,7 @@ export const browserActTool = defineTool({
       }
       if (diffs.length) diffNote = "\n\n[Toggle feedback]\n" + diffs.join("\n");
     } catch {}
-    const text = formatSnapshot(next) + diffNote;
+    const text = formatSnapshot(next, { compact: params.compact }) + diffNote;
     return {
       content: [{ type: "text", text }],
       details: { executed: params.actions.map((a: any) => a.id), url: next.url },

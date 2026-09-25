@@ -1,5 +1,9 @@
-(() => {
+((query) => {
   if (!document.body) return null;
+  const relevanceQuery = typeof query === "string" ? query.trim().slice(0, 200) : "";
+  const queryTerms = relevanceQuery
+    ? relevanceQuery.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 10)
+    : [];
   const cache = (window.__layaFast ||= { ids: new WeakMap(), nodes: new Map(), next: 1 });
   const identity = (e) => {
     if (!cache.ids.has(e)) cache.ids.set(e, cache.next++);
@@ -139,6 +143,8 @@
   // Collect all roots: document, shadowRoots (open), same-origin iframes
   let crossOriginSkipped = 0;
   let closedShadowSkipped = 0;
+  const closedShadowTags = [];
+  const crossOriginSrcs = [];
   const roots = [];
   const seenRoots = new Set();
   const queue = [document];
@@ -156,15 +162,17 @@
     for (const el of els) {
       if (el.shadowRoot) queue.push(el.shadowRoot);
       else if (el.tagName.includes("-") && el.attachShadow && !el.shadowRoot) {
-        // Potential closed shadow root (mode:closed, opaque) — cannot pierce. Count for observability.
-        // Heuristic: custom element tag with hyphen but no open shadowRoot → likely closed.
         closedShadowSkipped++;
+        if (closedShadowTags.length < 10) closedShadowTags.push(el.tagName.toLowerCase());
       }
       if (el.tagName === "IFRAME") {
         try {
           const doc = el.contentDocument;
           if (doc) queue.push(doc);
-          else if (el.src && el.src !== "about:blank") crossOriginSkipped++;
+          else if (el.src && el.src !== "about:blank") {
+            crossOriginSkipped++;
+            if (crossOriginSrcs.length < 10) crossOriginSrcs.push(el.src.slice(0, 80));
+          }
         } catch {
           crossOriginSkipped++;
         }
@@ -280,18 +288,48 @@
     }
     for (const e of nodes) addAction(e);
   }
-  // Capture page text across all roots up to 12k
+  // Capture page text across all roots — collect up to 100k then rank to best 12k (next to 10: relevance)
   const MAX_TEXT = 12000;
+  const MAX_COLLECT = 100000;
   const words = [];
   let length = 0;
   const walkRoot = (root) => {
     const body = root.body || root;
     const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     let node;
-    while ((node = walker.nextNode()) && length < MAX_TEXT) {
+    let lastHeading = "";
+    while ((node = walker.nextNode()) && length < MAX_COLLECT) {
       const v = node.textContent.trim(),
         p = node.parentElement;
       if (!v || !p || p.closest("script,style,noscript,template") || !visible(p)) continue;
+      // heading hierarchy: prefix markdown #..###### so LLM knows structure even when truncated
+      const h = p.closest("h1,h2,h3,h4,h5,h6");
+      if (h) {
+        const lvl = parseInt(h.tagName[1], 10) || 2;
+        const marker = "#".repeat(Math.min(lvl, 6));
+        const annotated = marker + " " + v;
+        words.push(annotated);
+        length += annotated.length;
+        lastHeading = v.slice(0, 60);
+        continue;
+      }
+      // landmark grouping: annotate when entering new form/nav/article section (helps 50k docs)
+      const landmark = p.closest("form,nav,article,section,header,footer,aside");
+      if (landmark && words.length > 0 && landmark.getAttribute("aria-label")) {
+        const lmLabel = landmark.getAttribute("aria-label").slice(0, 40);
+        if (lmLabel && lastHeading !== lmLabel) {
+          // only inject marker once per landmark, not per text node — check last word
+          const last = words[words.length - 1] || "";
+          if (!last.includes(lmLabel)) {
+            const marker = "[" + landmark.tagName.toLowerCase() + ": " + lmLabel + "]";
+            if (length + marker.length < MAX_TEXT) {
+              words.push(marker);
+              length += marker.length;
+            }
+            lastHeading = lmLabel;
+          }
+        }
+      }
       words.push(v);
       length += v.length;
     }
@@ -303,9 +341,92 @@
     } catch {}
   }
   // Also walk shadow roots explicitly for text inside shadow
-  const fullText = words.join("\n");
-  const text = fullText.slice(0, MAX_TEXT);
-  const fullTextLength = fullText.length;
+  const fullTextRaw = words.join("\n");
+  const fullTextLength = fullTextRaw.length;
+  // --- next to 10: relevance ranking — keep best 12k by heading/position + TF-IDF if query ---
+  let text = fullTextRaw;
+  let ranked = false;
+  if (fullTextRaw.length > MAX_TEXT) {
+    // split into blocks by blank double-newline or heading markers
+    // keep annotated heading lines as block prefixes
+    const rawBlocks = fullTextRaw
+      .split(/\n{2,}/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    // fallback: if no blank lines, split by single newline into blocks of ~500 chars
+    let blocks = rawBlocks;
+    if (blocks.length < 3) {
+      const lines = fullTextRaw.split("\n").filter(Boolean);
+      blocks = [];
+      let buf = "";
+      for (const l of lines) {
+        buf += (buf ? "\n" : "") + l;
+        if (buf.length > 600) {
+          blocks.push(buf);
+          buf = "";
+        }
+      }
+      if (buf) blocks.push(buf);
+    }
+    const scored = blocks.map((b, idx) => {
+      let score = 0;
+      const lower = b.toLowerCase();
+      // heading bonus: markdown # prefix
+      if (/^#{1,6}\s/.test(b)) score += 80 - (b.match(/^#+/) || ["#"])[0].length * 8;
+      // landmark bonus
+      if (/^\[(form|nav|article|section|header|aside):/.test(b)) score += 20;
+      // position bonus: keep intro and keep tail slightly (U-shape), but prioritize headings
+      if (idx < 3) score += 15 - idx * 3;
+      if (idx === blocks.length - 1) score += 8;
+      // length normalized: prefer 80-600 char blocks (not tiny fragments)
+      if (b.length >= 80 && b.length <= 800) score += 10;
+      else if (b.length < 20) score -= 5;
+      // query TF-IDF: if query terms present, strong boost
+      if (queryTerms.length) {
+        let qHits = 0;
+        for (const t of queryTerms) {
+          const re = new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+          const m = lower.match(re);
+          if (m) qHits += m.length * (t.length > 4 ? 12 : 8);
+        }
+        score += qHits;
+        // exact phrase bonus
+        if (relevanceQuery && lower.includes(relevanceQuery.toLowerCase())) score += 25;
+      }
+      return { b, idx, score, len: b.length };
+    });
+    // select top blocks until 12k, preserving original order
+    scored.sort((a, b) => b.score - a.score);
+    let picked = [];
+    let total = 0;
+    for (const s of scored) {
+      if (total + s.len + 2 > MAX_TEXT) continue;
+      picked.push(s);
+      total += s.len + 2;
+      if (total >= MAX_TEXT * 0.92) break;
+    }
+    // if still under 70% fill, add in order blocks not yet picked (fallback to head)
+    if (total < MAX_TEXT * 0.7) {
+      const pickedIdx = new Set(picked.map((p) => p.idx));
+      for (const s of scored.sort((a, b) => a.idx - b.idx)) {
+        if (pickedIdx.has(s.idx)) continue;
+        if (total + s.len + 2 > MAX_TEXT) break;
+        picked.push(s);
+        total += s.len + 2;
+      }
+    }
+    picked.sort((a, b) => a.idx - b.idx);
+    text = picked.map((p) => p.b).join("\n\n");
+    ranked = true;
+    // if ranking produced less than slice would, ensure at least first 4k head always present for context
+    if (text.length < 4000 && fullTextRaw.length >= 4000) {
+      const head = fullTextRaw.slice(0, 4000);
+      if (!text.includes(head.slice(0, 200))) text = head + "\n\n" + text;
+      if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT);
+    }
+  } else {
+    text = fullTextRaw.slice(0, MAX_TEXT);
+  }
   const height = document.documentElement.scrollHeight;
   const page_key = cache.pageKey(),
     guards = {};
@@ -334,8 +455,27 @@
     semantics,
     page_key[6],
   ];
+  // gap2: semantic dedup before cap — collapse repetitive mega-menu duplicates (keep first 3 per role|label), keeps fill/select always
+  const seen = new Map();
+  const deduped = [];
+  let dedupedSkipped = 0;
+  for (const a of actions) {
+    const key = (a.role + "|" + String(a.label).toLowerCase().trim()).slice(0, 120);
+    const c = seen.get(key) ?? 0;
+    // fill/select never deduped (critical), click deduped after 3 identicals
+    if (c >= 3 && a.kind === "click" && a.role !== "option") {
+      dedupedSkipped++;
+      continue;
+    }
+    seen.set(key, c + 1);
+    deduped.push(a);
+  }
+  if (dedupedSkipped) {
+    actions.length = 0;
+    actions.push(...deduped);
+  }
   const omitted = Math.max(0, actions.length - 400);
-  actions.splice(400); // 400 cap with priority
+  actions.splice(400); // 400 cap with priority (gap2: now deduped first)
   actions.forEach((a, i) => (a.id = "e" + (i + 1)));
   if (scrollY + innerHeight < height - 2)
     actions.push({
@@ -363,12 +503,17 @@
     fullTextLength,
     crossOriginSkipped,
     closedShadowSkipped,
+    closedShadowTags,
+    crossOriginSrcs,
+    dedupedSkipped: typeof dedupedSkipped !== "undefined" ? dedupedSkipped : 0,
     scroll: { y: scrollY, height },
     actions,
     marker,
     page_key,
     guards,
     omitted_actions: omitted,
+    ranked,
+    relevanceQuery,
     fingerprint: JSON.stringify(marker).slice(0, 64),
   };
-})();
+})

@@ -18,8 +18,14 @@ export interface Snapshot {
   h: number;
   text: string;
   fullTextLength?: number;
+  ranked?: boolean;
+  relevanceQuery?: string;
   crossOriginSkipped?: number;
   closedShadowSkipped?: number;
+  closedShadowTags?: string[];
+  crossOriginSrcs?: string[];
+  dedupedSkipped?: number;
+  ariaFallback?: string | null;
   actions: any[];
   marker: any;
   page_key: any;
@@ -76,7 +82,7 @@ export class Browser {
   private lastDialog: { type: string; message: string; defaultValue?: string } | null = null;
   private lastDownload: { filename: string; url: string; path: string } | null = null;
 
-  async launch(url: string, headed = true, timeoutMs = 30000): Promise<Snapshot> {
+  async launch(url: string, headed = true, timeoutMs = 30000, query?: string): Promise<Snapshot> {
     // URL validation — reject file/data/javascript/blob etc.
     validateUrl(url);
     // lazy load playwright — single dependency user must install: npm i playwright && npx playwright install chromium
@@ -153,16 +159,36 @@ export class Browser {
     await this.page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
     await sleep(600);
 
-    return this.observe();
+    return this.observe(query);
   }
 
-  async observe(): Promise<Snapshot> {
+  async observe(query?: string): Promise<Snapshot> {
     if (!this.page) throw new Error("Browser not launched");
     const code = this.snapshotJs;
-    // page.evaluate runs snapshot.js atomically in browser context — Function instead of eval (CSP/lint safe)
-    const snap: any = await this.page.evaluate((js: string) => {
-      return Function("return " + js)();
-    }, code);
+    // page.evaluate runs snapshot.js atomically — query-aware (next to 10: relevance ranking)
+    const snap: any = await this.page.evaluate(
+      ({ js, q }: { js: string; q: string | undefined }) => {
+        // clean js: remove leading eslint comments and trailing semicolon for Function wrapping
+        const clean = js
+          .replace(/^\/\*[\s\S]*?\*\//, "")
+          .trim()
+          .replace(/;\s*$/, "");
+        try {
+          const fn = (Function("query", "return (" + clean + ")") as any)(q);
+          if (typeof fn === "function") return fn(q);
+          if (fn && typeof fn === "object") return fn;
+        } catch {
+          // debug: expose error via fallback
+        }
+        // fallback: old self-invoked IIFE
+        try {
+          return (Function("return " + js) as any)();
+        } catch {
+          return null;
+        }
+      },
+      { js: code, q: query }
+    );
     if (!snap) throw new Error("snapshot failed — page has no body");
     // Normalize — ensure every action has role/label/kind so format.ts never crashes on padEnd (#padEnd bug)
     snap.actions = (snap.actions ?? []).map((a: any) => ({
@@ -175,6 +201,9 @@ export class Browser {
     snap.fullTextLength = snap.fullTextLength ?? snap.text.length;
     snap.crossOriginSkipped = snap.crossOriginSkipped ?? 0;
     snap.closedShadowSkipped = snap.closedShadowSkipped ?? 0;
+    snap.closedShadowTags = snap.closedShadowTags ?? [];
+    snap.crossOriginSrcs = snap.crossOriginSrcs ?? [];
+    snap.dedupedSkipped = snap.dedupedSkipped ?? 0;
     snap.guards = snap.guards ?? {};
     snap.scroll = snap.scroll ?? { y: 0, height: 0 };
     snap.omitted_actions = snap.omitted_actions ?? 0;
@@ -183,6 +212,19 @@ export class Browser {
     if (this.lastDialog) this.lastDialog = null; // consume once
     snap.download = this.lastDownload;
     if (this.lastDownload) this.lastDownload = null; // consume once (banner)
+    // gap4: accessibility fallback when closed shadow / cross-origin blocks pierce (best-effort, 3k truncated)
+    if (
+      (snap.closedShadowSkipped > 0 || snap.crossOriginSkipped > 0) &&
+      this.page?.accessibility?.snapshot
+    ) {
+      try {
+        const ax: any = await this.page.accessibility.snapshot({ interestingOnly: true });
+        const flat = JSON.stringify(ax).slice(0, 3000);
+        snap.ariaFallback = flat.length > 100 ? flat : null;
+      } catch {
+        snap.ariaFallback = null;
+      }
+    } else snap.ariaFallback = null;
     return snap as Snapshot;
   }
 

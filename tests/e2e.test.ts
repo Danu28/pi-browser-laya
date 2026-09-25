@@ -22,7 +22,7 @@ afterAll(async () => {
 });
 
 describe("e2e headed:false — real Chromium", () => {
-  it("launches http headed:false and captures snapshot (2-4 call budget)", async () => {
+  it("launches http headed:false and captures snapshot (2-4 call budget) — ranked 12k without query", async () => {
     const b = new Browser();
     const snap = await b.launch(baseUrl, false, 10000);
     expect(snap.text).toContain("hello world");
@@ -48,6 +48,43 @@ describe("e2e headed:false — real Chromium", () => {
     expect(() => validateUrl("data:text/html,hi")).toThrow(/Blocked protocol/);
     expect(validateUrl("https://example.com").protocol).toBe("https:");
   });
+
+  it("query-aware ranking: 50k page with query keeps relevant tail (next to 10)", async () => {
+    const { createServer: cs } = await import("node:http");
+    // build 50k page: 200 blocks of 250 chars, tail contains unique token UNIQTAIL123
+    const bigHtml =
+      "<html><body>" +
+      Array.from(
+        { length: 180 },
+        (_, i) => `<h2>Section ${i}</h2><p>${"lorem ".repeat(50)} block ${i}</p>`
+      ).join("") +
+      "<h2>Tail Section</h2><p>UNIQTAIL123 pricing disclaimer at tail near 50k</p></body></html>";
+    const srv = cs((_, res) => {
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(bigHtml);
+    });
+    await new Promise<void>((r) => srv.listen(0, r));
+    const addr: any = srv.address();
+    const url = `http://127.0.0.1:${addr.port}`;
+    const b2 = new Browser();
+    // without query, 12k is heading-ranked (should contain Section 0)
+    const snapNoQuery = await b2.launch(url, false, 10000);
+    expect(snapNoQuery.fullTextLength).toBeGreaterThan(12000);
+    expect(snapNoQuery.text.length).toBeLessThanOrEqual(12000);
+    expect(snapNoQuery.text).toContain("Section 0");
+    await b2.close();
+    // with query, ranked 12k should contain tail token even though tail is beyond 12k head
+    const b3 = new Browser();
+    const snapQuery = await b3.launch(url, false, 10000, "UNIQTAIL123 pricing");
+    expect(snapQuery.ranked).toBe(true);
+    expect(snapQuery.relevanceQuery).toBe("UNIQTAIL123 pricing");
+    expect(snapQuery.text).toContain("UNIQTAIL123");
+    // also via observe(query)
+    const reRanked = await b3.observe("Section 50");
+    expect(reRanked.text).toContain("Section 50");
+    await b3.close();
+    await new Promise<void>((r) => srv.close(() => r()));
+  }, 25000);
 
   it("browser_download streams tmp file", async () => {
     const { writeFile, mkdir, readFile } = await import("node:fs/promises");
