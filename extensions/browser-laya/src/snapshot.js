@@ -46,7 +46,7 @@
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]')||e.parentElement;
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
-  // Collect all roots: document, shadowRoots, same-origin iframes (handles selectorshub shadow/iframe practice page)
+  // Collect all roots: document, shadowRoots (open), same-origin iframes
   let crossOriginSkipped=0;
   const roots = [];
   const seenRoots = new Set();
@@ -88,7 +88,7 @@
     if(e.tagName==='SELECT'){
       for(const o of e.options) if(!o.selected&&!o.disabled&&!o.closest('optgroup[disabled]')) actions.push({...base,kind:'select',value:o.value,current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
-      // General: allow programmatic fill even if readonly (e.g. SelectorsHub email readonly until focus) — we set value via JS
+      // Allow programmatic fill even if readonly (e.g. inputs readonly until focus) — we set value via JS
       const editable=e.getAttribute('aria-readonly')!=='true'&&(['textbox','searchbox','spinbutton'].includes(rname)||(rname==='combobox'&&['INPUT','TEXTAREA'].includes(e.tagName)));
       const value='value' in e?String(e.value):e.isContentEditable||rname==='combobox'?e.innerText.trim():'';
       // Keep single action per element (fill OR click) to save cap — no duplicate "Open "

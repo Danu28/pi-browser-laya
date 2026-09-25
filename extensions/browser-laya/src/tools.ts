@@ -66,7 +66,7 @@ export const browserActTool = defineTool({
         id: Type.String({ description: "Element id e1..e250 or scroll_down/scroll_up/wait" }),
         text: Type.Optional(Type.String({ description: "Text for fill only" })),
       }),
-      { description: "Batch 1-5 (v1.2: was 3, now 5 for Dummy 5 + Payment 4)" }
+      { description: "Batch 1-5 (was 3)" }
     ),
   }),
   async execute(_id, params) {
