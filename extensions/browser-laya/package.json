@@ -1,0 +1,12 @@
+{
+  "name": "pi-browser-laya",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Playwright-based laya-inspired browser extension for pi (3-4 turns) — single dep: playwright",
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "scripts": {
+    "postinstall": "npx playwright install chromium"
+  }
+}
