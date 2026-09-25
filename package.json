@@ -1,0 +1,24 @@
+{
+  "name": "pi-browser-laya",
+  "version": "1.0.0",
+  "description": "General Playwright browser extension for pi — laya + jev ideas, 2-4 LLM calls for any site (single dep: playwright)",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "extension", "browser", "playwright", "laya", "jev"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Danu28/pi-browser-laya.git"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "scripts": {
+    "postinstall": "npx playwright install chromium"
+  },
+  "pi": {
+    "extensions": ["./extensions/browser-laya/index.ts"]
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

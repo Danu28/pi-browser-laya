@@ -1,6 +1,5 @@
 /**
- * Tool definitions — laya-inspired batched actions
- * One LLM call -> many typed decisions; one browser call -> atomic snapshot
+ * Tool definitions — website-agnostic: snapshot + act + live text for any site
  */
 
 import { Type } from "@earendil-works/pi-ai";
@@ -21,9 +20,9 @@ export const browserLaunchTool = defineTool({
   name: "browser_launch",
   label: "Browser Launch",
   description:
-    "Launch Chrome (headed) and navigate to URL. Waits for load, then returns ATOMIC snapshot: visible text (6k) + indexed element table e1..e250. Use this single snapshot for planning — DO NOT call snapshot again before acting. Headed mode shows browser window.",
+    "Launch Playwright Chromium headed, goto URL, wait networkidle. Returns 12k full-page snapshot (text incl. offscreen) + element table with y/onscreen hints. Offscreen elements are clickable (auto scrollIntoView). For content beyond 12k use browser_text.",
   parameters: Type.Object({
-    url: Type.String({ description: "URL to open, e.g. https://instantink.hpconnected.com/us/en/l/v2" }),
+    url: Type.String({ description: "URL to open" }),
     headed: Type.Optional(Type.Boolean({ description: "Show headed window (default true)" })),
   }),
   async execute(_id, params) {
@@ -31,9 +30,8 @@ export const browserLaunchTool = defineTool({
     browser = new Browser();
     const snap = await browser.launch(params.url, params.headed ?? true);
     lastSnapshot = snap;
-    const formatted = formatSnapshot(snap);
     return {
-      content: [{ type: "text", text: formatted }],
+      content: [{ type: "text", text: formatSnapshot(snap) }],
       details: { url: snap.url, title: snap.title, actions: snap.actions.length, fingerprint: snap.fingerprint },
     };
   },
@@ -43,7 +41,7 @@ export const browserLaunchTool = defineTool({
 export const browserSnapshotTool = defineTool({
   name: "browser_snapshot",
   label: "Browser Snapshot",
-  description: "Re-observe page atomically (one CDP call). Returns updated visible text + element table. Call only after browser_act.",
+  description: "Re-observe full page atomically (one evaluate). Returns updated 12k text + element table.",
   parameters: Type.Object({}),
   async execute() {
     const b = getBrowser();
@@ -56,21 +54,19 @@ export const browserSnapshotTool = defineTool({
   },
 });
 
-// ---------- browser_act (BATCHED) ----------
+// ---------- browser_act (BATCHED + offscreen-aware) ----------
 export const browserActTool = defineTool({
   name: "browser_act",
   label: "Browser Act (batched)",
   description:
-    "Execute 1-3 actions as a BATCH in one browser call, then auto re-observe once. This is how you achieve 3-4 turn task completion.\n" +
-    "Laya pattern: operation+target in ONE JSON. Example: [{\"id\":\"e42\"}] clicks 4th FAQ. For scroll: [{\"id\":\"scroll_down\"}]. For fill: [{\"id\":\"e5\",\"text\":\"hello\"}].\n" +
-    "Batch example: [{\"id\":\"e42\"},{\"id\":\"e43\"}]. Returns single updated snapshot after all actions.",
+    "Execute 1-3 actions as batch then auto re-observe once. Elements include offscreen (with y) — click [eXX] directly even if offscreen (auto scrollIntoView). Avoid scroll loops.",
   parameters: Type.Object({
     actions: Type.Array(
       Type.Object({
         id: Type.String({ description: "Element id e1..e250 or scroll_down/scroll_up/wait" }),
-        text: Type.Optional(Type.String({ description: "Text for fill actions only" })),
+        text: Type.Optional(Type.String({ description: "Text for fill only" })),
       }),
-      { description: "Ordered batch 1-3 actions to execute atomically" }
+      { description: "Batch 1-3" }
     ),
   }),
   async execute(_id, params) {
@@ -79,9 +75,8 @@ export const browserActTool = defineTool({
     const snap = lastSnapshot;
     for (const a of params.actions) {
       const action = snap.actions.find((x: any) => x.id === a.id);
-      // allow scroll/wait without lookup
       const target = action ?? (["scroll_down", "scroll_up", "wait"].includes(a.id) ? { id: a.id, kind: a.id.startsWith("scroll") ? "scroll" : "wait", delta: a.id === "scroll_down" ? 560 : -560 } : null);
-      if (!target) throw new Error(`Unknown element ${a.id}. Available: ${snap.actions.slice(0, 20).map((x: any) => x.id).join(", ")}`);
+      if (!target) throw new Error(`Unknown ${a.id}. Have: ${snap.actions.slice(0, 30).map((x: any) => `${x.id}:${x.label.slice(0,25)}`).join(", ")}`);
       await b.act(target, snap, a.text);
     }
     const next = await b.observe();
@@ -98,10 +93,10 @@ export const browserExtractTool = defineTool({
   name: "browser_extract",
   label: "Browser Extract",
   description:
-    "Extract text from last snapshot without new LLM call for loops. Give element id (e.g. e42) or query substring. Returns scope.innerText + visible text. Use after FAQ is expanded to get answer.",
+    "After clicking an element, extract its expanded scope. Provide target id e.g. e12. Returns guard scope + snapshot slice. For generic page text search use browser_text.",
   parameters: Type.Object({
-    target: Type.Optional(Type.String({ description: "Element id e.g. e42 (4th FAQ). If omitted, searches visible text." })),
-    query: Type.Optional(Type.String({ description: "Substring to find in visible text, e.g. 'FAQ' or question text" })),
+    target: Type.Optional(Type.String({ description: "Element id e.g. e12" })),
+    query: Type.Optional(Type.String({ description: "Substring fallback (searches live page)" })),
   }),
   async execute(_id: any, params: any) {
     const b = getBrowser();
@@ -109,27 +104,70 @@ export const browserExtractTool = defineTool({
     if (params.target) {
       const el = snap.actions.find((x: any) => x.id === params.target);
       if (!el) throw new Error(`No ${params.target}`);
-      // guards scope contains expanded text
       const guard = (snap.guards as any)[el.node];
       const scopeText = guard?.[13] ?? "";
       return {
-        content: [{ type: "text", text: `EXTRACT ${params.target} (${el.label})\nrole=${el.role} kind=${el.kind}\n--- scope (up to 6k) ---\n${scopeText.slice(0, 6000)}\n--- visible page text ---\n${snap.text.slice(0, 6000)}` }],
+        content: [{ type: "text", text: `EXTRACT ${params.target} (${el.label})\nrole=${el.role} kind=${el.kind} y=${el.rect?.y}\n--- scope (up to 6k) ---\n${scopeText.slice(0, 6000)}\n--- snapshot text ---\n${snap.text.slice(0, 6000)}` }],
         details: { id: params.target, label: el.label },
       } as any;
     }
     if (params.query) {
-      const idx = snap.text.indexOf(params.query);
-      const ctx = idx >= 0 ? snap.text.slice(Math.max(0, idx - 500), idx + 2000) : `Query "${params.query}" not found. Full text:\n${snap.text.slice(0, 4000)}`;
-      return { content: [{ type: "text", text: ctx }], details: { query: params.query } } as any;
+      const live = await b.findText(params.query);
+      return { content: [{ type: "text", text: live }], details: { query: params.query } } as any;
     }
     return { content: [{ type: "text", text: snap.text.slice(0, 6000) }], details: {} } as any;
+  },
+});
+
+// ---------- browser_text — generic live reader for any long page ----------
+export const browserTextTool = defineTool({
+  name: "browser_text",
+  label: "Browser Text",
+  description:
+    "Live full-page innerText reader for any website and any length. Runs page.evaluate(() => document.body.innerText) live. Modes: no params → head (12k); {query:\"<phrase>\"} → context around match; {offset, limit} → pagination (offset supports negative for bottom); {blockIndex:N} → Nth block split by blank lines (1-based, website-agnostic). Use for bottom disclaimers, long articles, or when snapshot is truncated. Do not use fetch/web_search for live page content.",
+  parameters: Type.Object({
+    query: Type.Optional(Type.String({ description: "Substring to search live full text" })),
+    offset: Type.Optional(Type.Number({ description: "Char offset into full innerText; negative counts from end (e.g. -5000 for bottom)" })),
+    limit: Type.Optional(Type.Number({ description: "Chars to return (default 12000 for head, 3000 for query context)" })),
+    blockIndex: Type.Optional(Type.Number({ description: "1-based block index split by blank lines (generic, no site anchor)" })),
+  }),
+  async execute(_id: any, params: any) {
+    const b = getBrowser();
+    if (params.blockIndex) {
+      const { blocks, count } = await b.getBlocks();
+      const idx = Number(params.blockIndex) - 1;
+      if (idx < 0 || idx >= count) {
+        return {
+          content: [{ type: "text", text: `Block ${params.blockIndex} out of range (have ${count}). First 5 blocks:\n${blocks.slice(0,5).map((s,i)=>`${i+1}. ${s.slice(0,400)}`).join("\n\n")}\n\nTry query or offset for bottom content.` }],
+          details: { count, requested: params.blockIndex },
+        } as any;
+      }
+      const item = blocks[idx];
+      return {
+        content: [{ type: "text", text: `Block ${params.blockIndex}/${count}:\n${item}\n\n--- All ${count} blocks: use query or different index ---` }],
+        details: { index: params.blockIndex, count, text: item },
+      } as any;
+    }
+    if (params.query) {
+      const ctx = await b.findText(params.query, params.limit ?? 3000);
+      return { content: [{ type: "text", text: ctx }], details: { query: params.query } } as any;
+    }
+    if (params.offset !== undefined || params.limit !== undefined) {
+      const { text, length } = await b.getChunk(params.offset ?? 0, params.limit ?? 12000);
+      const note = length > text.length ? ` (full page ${length} chars)` : "";
+      return { content: [{ type: "text", text: text + (text.length < length ? `\n\n[Chunk ${params.offset ?? 0}..${(params.offset ?? 0)+text.length} of ${length}]` : "") }], details: { length } } as any;
+    }
+    const full = await b.getFullText();
+    const head = full.slice(0, 12000);
+    const note = full.length > 12000 ? `\n\n[Full page ${full.length} chars, showing head 12k. Use query, offset/limit, or blockIndex for remainder.]` : "";
+    return { content: [{ type: "text", text: head + note }], details: { length: full.length } } as any;
   },
 });
 
 export const browserCloseTool = defineTool({
   name: "browser_close",
   label: "Browser Close",
-  description: "Close Chrome and release CDP session.",
+  description: "Close Playwright Chromium.",
   parameters: Type.Object({}),
   async execute() {
     if (browser) { await browser.close(); browser = null; lastSnapshot = null; }
@@ -137,5 +175,4 @@ export const browserCloseTool = defineTool({
   },
 });
 
-// for agent helper
 export function getLastSnapshot() { return lastSnapshot; }

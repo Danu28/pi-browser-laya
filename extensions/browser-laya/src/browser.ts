@@ -11,7 +11,7 @@ export class StalePage extends Error {}
 
 export interface Snapshot {
   url: string; title: string; w: number; h: number;
-  text: string; actions: any[]; marker: any; page_key: any;
+  text: string; fullTextLength?: number; actions: any[]; marker: any; page_key: any;
   guards: Record<string, any>; omitted_actions: number;
   scroll: { y: number; height: number }; fingerprint: string;
 }
@@ -69,9 +69,9 @@ export class Browser {
     });
     this.page = await this.context.newPage();
 
-    // Navigate and wait till load completely — as user requested
+    // Navigate and wait till load completely
     await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    // Extra wait for dynamic content (FAQs) + network idle
+    // Extra wait for dynamic content + network idle
     await this.page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
     await sleep(600);
 
@@ -89,19 +89,47 @@ export class Browser {
     if (!snap) throw new Error("snapshot failed — page has no body");
     // Normalize — ensure every action has role/label/kind so format.ts never crashes on padEnd (#padEnd bug)
     snap.actions = (snap.actions ?? []).map((a: any) => ({
-      role: a.role ?? a.kind ?? "unknown",
-      label: a.label ?? a.id ?? "",
-      kind: a.kind ?? "click",
       ...a,
       role: a.role ?? a.kind ?? "unknown",
       label: a.label ?? a.id ?? "",
+      kind: a.kind ?? "click",
     }));
     snap.text = snap.text ?? "";
+    snap.fullTextLength = snap.fullTextLength ?? snap.text.length;
     snap.guards = snap.guards ?? {};
     snap.scroll = snap.scroll ?? { y: 0, height: 0 };
     snap.omitted_actions = snap.omitted_actions ?? 0;
     snap.fingerprint = snap.fingerprint ?? String(Date.now());
     return snap as Snapshot;
+  }
+
+  // --- LIVE text helpers — website-agnostic (no hardcoded anchors) ---
+  async getFullText(): Promise<string> {
+    if (!this.page) throw new Error("Browser not launched");
+    return this.page.evaluate(() => (document.body as any).innerText as string);
+  }
+
+  async getBlocks(): Promise<{ full: string; blocks: string[]; count: number }> {
+    if (!this.page) throw new Error("Browser not launched");
+    return this.page.evaluate(() => {
+      const raw = (document.body as any).innerText as string;
+      const blocks = raw.split(/\n\s*\n/).map((s: string) => s.trim()).filter(Boolean);
+      const list = blocks.length > 0 ? blocks : raw.split("\n").map(s=>s.trim()).filter(Boolean);
+      return { full: raw, blocks: list, count: list.length };
+    });
+  }
+
+  async findText(query: string, contextChars = 3000): Promise<string> {
+    const full = await this.getFullText();
+    const i = full.toLowerCase().indexOf(query.toLowerCase());
+    if (i < 0) return `Query "${query}" not found in full page (${full.length} chars). First 4000 chars:\n${full.slice(0,4000)}`;
+    return full.slice(Math.max(0, i - 600), i + contextChars);
+  }
+
+  async getChunk(offset = 0, limit = 12000): Promise<{ text: string; length: number }> {
+    const full = await this.getFullText();
+    const start = offset < 0 ? Math.max(0, full.length + offset) : offset;
+    return { text: full.slice(start, start + limit), length: full.length };
   }
 
   async act(action: any, _page: Snapshot, text?: string): Promise<void> {

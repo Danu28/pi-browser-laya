@@ -1,7 +1,6 @@
 /**
- * pi-browser-laya — zero-dependency browser-use extension
- * Idea only from jev-ultrafast (atomic snapshot + indexed actions) + laya (typed decisions in one pass)
- * Goal: 3-4 LLM calls vs 16-20
+ * pi-browser-laya — general browser-use extension for pi
+ * Single dep: playwright bundled chromium. Atomic snapshot + offscreen-aware act + live text.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
@@ -9,6 +8,7 @@ import {
   browserSnapshotTool,
   browserActTool,
   browserExtractTool,
+  browserTextTool,
   browserCloseTool,
 } from "./src/tools.js";
 
@@ -17,19 +17,18 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserSnapshotTool);
   pi.registerTool(browserActTool);
   pi.registerTool(browserExtractTool);
+  pi.registerTool(browserTextTool);
   pi.registerTool(browserCloseTool);
 
-  // Optional: helpful command to show workflow
   pi.registerCommand("laya-help", {
-    description: "Show laya browser workflow (3-4 turn pattern)",
+    description: "Show general browser workflow",
     handler: async (_args, ctx) => {
       ctx.ui.notify(
         [
-          "3-Turn FAQ pattern:",
-          "1) browser_launch {url} -> snapshot",
-          "2) browser_act {actions:[{id:'e42'}]} -> expanded snapshot",
-          "3) browser_extract {target:'e42'} -> answer",
-          "No loops. One snapshot = one plan JSON.",
+          "General workflow:",
+          "1) browser_launch {url} → snapshot (12k + element table)",
+          "2) browser_act [eXX] for elements (offscreen auto-scrolls) or browser_text for long page content",
+          "3) browser_extract {target} for expanded scope, or browser_text {query|offset|blockIndex} for generic text",
         ].join("\n"),
         "info"
       );

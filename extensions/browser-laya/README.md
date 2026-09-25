@@ -1,7 +1,7 @@
 # pi-browser-laya — Playwright + laya/jev ideas (1 dep)
 
-> **Single dependency: `playwright`.** Bundled Chromium — no user-installed Chrome needed.  
-> Goal: `launch → wait load → 4th FAQ` in **3-4 LLM calls** (not 16-20).
+> **Single dependency: `playwright`.** Bundled Chromium — no user-installed Chrome needed.
+> Goal: complete any page task in **2-4 LLM calls** (not 12-20).
 
 ## Install (one dep)
 
@@ -25,54 +25,50 @@ pi --extension ./extensions/browser-laya/index.ts
 
 - `chromium.launch({ headless: !headed })` — bundled binary, headed mode shows window
 - `page.goto(url, {waitUntil:'domcontentloaded'})` + `waitForLoadState('networkidle')` — wait till page load completely
-- `page.evaluate(snapshot.js)` — **atomic snapshot** in ONE call: 6k visible text + `e1..e250` indexed element table + guards (ported from `jev-ultrafast/snapshot.js`)
+- `page.evaluate(snapshot.js)` — **atomic snapshot** in ONE call: 12k page text + `e1..e250` indexed element table + guards (ported from `jev-ultrafast/snapshot.js`, generalized to include offscreen elements)
 - `page.evaluate(nodeId => nodes.get(nodeId).click())` — click via snapshot's WeakMap cache with scroll + visibility guard; no XPath, no fragile selectors
-- Auto re-observe after each `browser_act` batch — `~101` CDP calls vs `1092`
+- Auto re-observe after each `browser_act` batch
 
-No system Chrome hunt, no `remote-debugging-port` juggling.
-
-## 3-Turn Workflow (laya pattern: operation+target in one JSON)
+## Workflows (website-agnostic)
 
 ```
-Turn 1 — browser_launch {url:"https://instantink.hpconnected.com/us/en/l/v2", headed:true}
-         → page.goto + networkidle (Playwright) + atomic snapshot (one evaluate)
+# Elements (any page, offscreen auto-scrolls)
+Turn 1 browser_launch {url, headed:true} → snapshot (12k + element table y hints)
+Turn 2 browser_act [{"id":"e12"}] → click element (offscreen OK)
+Turn 3 browser_extract {"target":"e12"} → expanded scope
 
-Turn 2 — LLM outputs batch plan → browser_act {actions:[{id:"e42"}]}
-         → page.evaluate click 4th FAQ (with guard) + auto re-observe
+# Long pages / bottom content (any site, beyond 12k)
+Turn 1 browser_launch {url, headed:true}
+Turn 2 browser_text {query:"<phrase>"} or {offset:-5000} or {blockIndex:10} → live innerText slice
 
-Turn 3 — browser_extract {target:"e42"}
-         → guards[e42].scope.innerText (6k) → answer. Done.
+# Generic text search
+browser_text {query:"pricing"} or {offset:0, limit:12000}
 ```
 
-No screenshot in loop, no HTML dump, wait is built into `launch` + `act`.
+No screenshot loop, no HTML dump, wait is built into launch/act.
 
 ## Why fast
 
-| Before (16-20 calls) | After (3-4) |
+| Before (12-20 calls) | After (2-4) |
 |---|---|
-| dump full HTML each turn | 6k visible text only |
-| 1 LLM call per click | 1 LLM call = batch 1-3 actions |
-| separate op + target calls | operation+target one JSON (laya `choice` typed decision) |
-| user Chrome + CDP port guess | Playwright bundled Chromium |
-| screenshots in context | text-only loop |
+| dump full HTML each turn | 12k text + indexed table |
+| 1 LLM call per click/scroll | 1 LLM call = batch 1-3 actions |
+| viewport-only snapshot → scroll hunt | full-page snapshot (offscreen incl.) |
+| separate op + target calls | operation+target one JSON (laya typed decision) |
+| fetch/web_search for live content | browser_text live evaluate |
 
-## Tools
+## Tools (all website-agnostic)
 
-- `browser_launch` — Playwright headed launch + wait load + snapshot
+- `browser_launch` — headed launch + wait load + snapshot
 - `browser_snapshot` — re-observe (one evaluate)
-- `browser_act` — **batched** 1-3 actions + auto snapshot
-- `browser_extract` — scope.innerText / search visible text
+- `browser_act` — batched 1-3 actions + auto snapshot (offscreen-aware)
+- `browser_extract` — scope.innerText for expanded elements
+- `browser_text` — live full `document.body.innerText` with query/offset/blockIndex pagination
 - `browser_close` — browser.close()
 
-## Test 4th FAQ
+## Examples
 
-In pi, just say:
 ```
-launch https://instantink.hpconnected.com/us/en/l/v2 headed, wait load, get 4th FAQ
-```
-
-Expected trace:
-1) `browser_launch`
-2) `browser_act [{"id":"eXX"}]`
-3) `browser_extract {"target":"eXX"}`
+launch https://example.com headed, wait load, click the pricing button
+launch https://example.com headed, get bottom legal disclaimers
 ```

@@ -40,10 +40,12 @@
   const actions=[];
   for(const e of document.querySelectorAll(selector)){
     if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
-    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
+    const r=e.getBoundingClientRect(), rname=role(e);
+    // Include offscreen elements so snapshot is complete in first call (avoid viewport-only scroll hunt)
+    if(!rname||r.width<=0||r.height<=0) continue;
     if(rname==='gridcell'&&e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
+    const onscreen = r.top < innerHeight && r.bottom > 0 && r.left < innerWidth && r.right > 0;
+    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen};
     for(const k of ['checked','selected','expanded']){const v=e.getAttribute('aria-'+k); if(v!==null) base[k]=v;}
     if(['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
     if(e.tagName==='SELECT'){
@@ -55,23 +57,27 @@
       if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   }
+  // Capture page text up to 12k (covers most pages) + expose total length for pagination via browser_text
+  const MAX_TEXT=12000;
   const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
-  const range=document.createRange(); let node,length=0;
-  while((node=walker.nextNode())&&length<6000){
+  let node,length=0;
+  while((node=walker.nextNode())&&length<MAX_TEXT){
     const v=node.textContent.trim(), p=node.parentElement;
     if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
-    range.selectNodeContents(node); const r=range.getBoundingClientRect();
-    if(r.width>0&&r.height>0&&r.bottom>0&&r.top<innerHeight&&r.right>0&&r.left<innerWidth){words.push(v); length+=v.length;}
+    words.push(v); length+=v.length;
   }
-  const text=words.join('\n').slice(0,6000), height=document.documentElement.scrollHeight;
+  const fullText=words.join('\n');
+  const text=fullText.slice(0,MAX_TEXT);
+  const fullTextLength=fullText.length;
+  const height=document.documentElement.scrollHeight;
   const page_key=cache.pageKey(), guards={};
   for(const a of actions) if(!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
-  const semantics=actions.map(({rect,...a})=>a);
+  const semantics=actions.map(({rect,onscreen,...a})=>a);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,document.title,text,semantics,page_key[6]];
   const omitted=Math.max(0,actions.length-250); actions.splice(250);
   actions.forEach((a,i)=>a.id='e'+(i+1));
-  if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
-  if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
-  actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
-  return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions:omitted,fingerprint:JSON.stringify(marker).slice(0,64)};
+  if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560, role:'scroll'});
+  if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560, role:'scroll'});
+  actions.push({id:'wait',kind:'wait',label:'Wait for the page to update', role:'wait'});
+  return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,fullTextLength,scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions:omitted,fingerprint:JSON.stringify(marker).slice(0,64)};
 })()
