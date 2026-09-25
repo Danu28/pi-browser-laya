@@ -20,7 +20,7 @@ export const browserLaunchTool = defineTool({
   name: "browser_launch",
   label: "Browser Launch",
   description:
-    "Launch Playwright Chromium headed, goto URL, wait networkidle. Returns 12k full-page snapshot (text incl. offscreen) + element table with y/onscreen hints. Offscreen elements are clickable (auto scrollIntoView). For content beyond 12k use browser_text.",
+    "Launch Playwright Chromium headed, goto URL, wait networkidle. Returns 12k full-page snapshot (text incl. offscreen, incl. shadow DOM + iframe) + element table with y/onscreen/frame hints. Offscreen/shadow/iframe elements are clickable (auto scrollIntoView). For content beyond 12k use browser_text. Use ONLY these browser tools, not fetch.",
   parameters: Type.Object({
     url: Type.String({ description: "URL to open" }),
     headed: Type.Optional(Type.Boolean({ description: "Show headed window (default true)" })),
@@ -54,12 +54,12 @@ export const browserSnapshotTool = defineTool({
   },
 });
 
-// ---------- browser_act (BATCHED + offscreen-aware) ----------
+// ---------- browser_act (BATCHED + offscreen/shadow-aware, handles fill) ----------
 export const browserActTool = defineTool({
   name: "browser_act",
   label: "Browser Act (batched)",
   description:
-    "Execute 1-3 actions as batch then auto re-observe once. Elements include offscreen (with y) — click [eXX] directly even if offscreen (auto scrollIntoView). Avoid scroll loops.",
+    "Execute 1-3 actions as batch then auto re-observe once. Use ONLY this for clicks AND fills. For fills: browser_act [{\"id\":\"eXX\",\"text\":\"value\"}] where kind=fill (marked ← FILL in table). Batch multiple fills: [{\"id\":\"e5\",\"text\":\"a@b.com\"},{\"id\":\"e7\",\"text\":\"Secret123\"}]. Also for submit: add click id in same batch e.g. [{\"id\":\"e5\",\"text\":\"john\"},{\"id\":\"e7\",\"text\":\"pass\"},{\"id\":\"e22\"}]. Elements include offscreen/shadow/iframe — click directly. Avoid fetch.",
   parameters: Type.Object({
     actions: Type.Array(
       Type.Object({

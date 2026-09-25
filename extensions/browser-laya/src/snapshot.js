@@ -7,11 +7,13 @@
   };
   for (const [id, e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
   const safe = (e) => !['password','file','hidden'].includes(e.type);
-  const visible = (e) => !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  const visible = (e) => {
+    try { return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); } catch { return true; }
+  };
   const name = (e, seen=new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
-    const ref = (e.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>name(document.getElementById(id),seen)).filter(Boolean).join(' ');
+    const ref = (e.getAttribute('aria-labelledby')||'').split(/\s+/).map(id=>{ try{ return name(document.getElementById(id)|| (e.getRootNode && (e.getRootNode()).getElementById && (e.getRootNode()).getElementById(id)), seen); } catch{ return ''; } }).filter(Boolean).join(' ');
     return ref || e.getAttribute('aria-label') || [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') || (['button','submit','reset'].includes(e.type)?e.value:'') || e.getAttribute('alt') || (e.tagName==='INPUT'?'':[...e.childNodes].map(n=>n.nodeType===3?n.textContent:n.nodeType===1&&n.getAttribute('aria-hidden')!=='true'?name(n,seen):'').join(' ').trim()) || e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','option','gridcell','combobox','textbox','searchbox','spinbutton'];
@@ -27,7 +29,7 @@
       if(['button','submit','reset','image'].includes(e.type)) return 'button';
       if(e.type==='search') return 'searchbox';
       if(e.type==='number') return 'spinbutton';
-      if(['text','email','url','tel'].includes(e.type)) return 'textbox';
+      if(['text','email','url','tel','password'].includes(e.type)) return 'textbox';
     }
     return null;
   };
@@ -37,15 +39,35 @@
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]')||e.parentElement;
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
+  // Collect all roots: document, shadowRoots, same-origin iframes (handles selectorshub shadow/iframe practice page)
+  const roots = [document];
+  const seenRoots = new Set();
+  const queue = [document];
+  while (queue.length) {
+    const root = queue.shift();
+    if (!root || seenRoots.has(root)) continue;
+    seenRoots.add(root);
+    roots.push(root);
+    let els=[];
+    try { els = root.querySelectorAll('*'); } catch { continue; }
+    for (const el of els) {
+      if (el.shadowRoot) queue.push(el.shadowRoot);
+      if (el.tagName === 'IFRAME') {
+        try {
+          const doc = el.contentDocument;
+          if (doc) queue.push(doc);
+        } catch {}
+      }
+    }
+  }
   const actions=[];
-  for(const e of document.querySelectorAll(selector)){
-    if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
+  const addAction = (e) => {
+    if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) return;
     const r=e.getBoundingClientRect(), rname=role(e);
-    // Include offscreen elements so snapshot is complete in first call (avoid viewport-only scroll hunt)
-    if(!rname||r.width<=0||r.height<=0) continue;
-    if(rname==='gridcell'&&e.querySelector('button,[role="button"]')) continue;
+    if(!rname||r.width<=0||r.height<=0) return;
+    if(rname==='gridcell'&&e.querySelector('button,[role="button"]')) return;
     const onscreen = r.top < innerHeight && r.bottom > 0 && r.left < innerWidth && r.right > 0;
-    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen};
+    const base={node:identity(e),role:rname,label:name(e)||rname,rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, onscreen, frame: e.ownerDocument !== document ? 'iframe/shadow' : ''};
     for(const k of ['checked','selected','expanded']){const v=e.getAttribute('aria-'+k); if(v!==null) base[k]=v;}
     if(['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
     if(e.tagName==='SELECT'){
@@ -56,23 +78,34 @@
       actions.push({...base,kind:editable?'fill':'click',value});
       if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
+  };
+  for (const root of roots) {
+    let nodes=[];
+    try { nodes = root.querySelectorAll(selector); } catch { continue; }
+    for (const e of nodes) addAction(e);
   }
-  // Capture page text up to 12k (covers most pages) + expose total length for pagination via browser_text
+  // Capture page text across all roots up to 12k
   const MAX_TEXT=12000;
-  const words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
-  let node,length=0;
-  while((node=walker.nextNode())&&length<MAX_TEXT){
-    const v=node.textContent.trim(), p=node.parentElement;
-    if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
-    words.push(v); length+=v.length;
-  }
+  const words=[]; let length=0;
+  const walkRoot = (root) => {
+    const body = root.body || root;
+    const walker=document.createTreeWalker(body,NodeFilter.SHOW_TEXT);
+    let node;
+    while((node=walker.nextNode())&&length<MAX_TEXT){
+      const v=node.textContent.trim(), p=node.parentElement;
+      if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
+      words.push(v); length+=v.length;
+    }
+  };
+  for (const root of roots) { if(length>=MAX_TEXT) break; try{ walkRoot(root); } catch{} }
+  // Also walk shadow roots explicitly for text inside shadow
   const fullText=words.join('\n');
   const text=fullText.slice(0,MAX_TEXT);
   const fullTextLength=fullText.length;
   const height=document.documentElement.scrollHeight;
   const page_key=cache.pageKey(), guards={};
   for(const a of actions) if(!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
-  const semantics=actions.map(({rect,onscreen,...a})=>a);
+  const semantics=actions.map(({rect,onscreen,frame,...a})=>a);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,document.title,text,semantics,page_key[6]];
   const omitted=Math.max(0,actions.length-250); actions.splice(250);
   actions.forEach((a,i)=>a.id='e'+(i+1));
