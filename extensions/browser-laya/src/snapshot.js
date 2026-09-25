@@ -6,7 +6,7 @@
     const id = cache.ids.get(e); cache.nodes.set(id, e); return id;
   };
   for (const [id, e] of cache.nodes) if (!e.isConnected) cache.nodes.delete(id);
-  const safe = (e) => !['password','file','hidden'].includes(e.type);
+  const safe = (e) => !['file','hidden'].includes(e.type); // allow password for dummy forms (general); jev excluded it for safety
   const visible = (e) => {
     try { return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); } catch { return true; }
   };
@@ -40,7 +40,7 @@
     return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
   // Collect all roots: document, shadowRoots, same-origin iframes (handles selectorshub shadow/iframe practice page)
-  const roots = [document];
+  const roots = [];
   const seenRoots = new Set();
   const queue = [document];
   while (queue.length) {
@@ -73,7 +73,8 @@
     if(e.tagName==='SELECT'){
       for(const o of e.options) if(!o.selected&&!o.disabled&&!o.closest('optgroup[disabled]')) actions.push({...base,kind:'select',value:o.value,current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
-      const editable=!e.readOnly&&e.getAttribute('aria-readonly')!=='true'&&(['textbox','searchbox','spinbutton'].includes(rname)||(rname==='combobox'&&['INPUT','TEXTAREA'].includes(e.tagName)));
+      // General: allow programmatic fill even if readonly (e.g. SelectorsHub email readonly until focus) — we set value via JS
+      const editable=e.getAttribute('aria-readonly')!=='true'&&(['textbox','searchbox','spinbutton'].includes(rname)||(rname==='combobox'&&['INPUT','TEXTAREA'].includes(e.tagName)));
       const value='value' in e?String(e.value):e.isContentEditable||rname==='combobox'?e.innerText.trim():'';
       actions.push({...base,kind:editable?'fill':'click',value});
       if(editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
@@ -107,7 +108,7 @@
   for(const a of actions) if(!(a.node in guards)) guards[a.node]=cache.guard(cache.nodes.get(a.node));
   const semantics=actions.map(({rect,onscreen,frame,...a})=>a);
   const marker=[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,document.title,text,semantics,page_key[6]];
-  const omitted=Math.max(0,actions.length-250); actions.splice(250);
+  const omitted=Math.max(0,actions.length-400); actions.splice(400); // 400 cap (was 250) to keep Password etc. for complex pages
   actions.forEach((a,i)=>a.id='e'+(i+1));
   if(scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560, role:'scroll'});
   if(scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560, role:'scroll'});
