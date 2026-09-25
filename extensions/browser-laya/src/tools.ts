@@ -59,14 +59,14 @@ export const browserActTool = defineTool({
   name: "browser_act",
   label: "Browser Act (batched)",
   description:
-    "Execute 1-3 actions as batch then auto re-observe once. Use ONLY this for clicks AND fills. For fills: browser_act [{\"id\":\"eXX\",\"text\":\"value\"}] where kind=fill (marked ← FILL in table). Batch multiple fills: [{\"id\":\"e5\",\"text\":\"a@b.com\"},{\"id\":\"e7\",\"text\":\"Secret123\"}]. Also for submit: add click id in same batch e.g. [{\"id\":\"e5\",\"text\":\"john\"},{\"id\":\"e7\",\"text\":\"pass\"},{\"id\":\"e22\"}]. Elements include offscreen/shadow/iframe — click directly. Avoid fetch.",
+    "Execute 1-5 actions as batch then auto re-observe once. Use ONLY this for clicks AND fills. For fills: browser_act [{\"id\":\"eXX\",\"text\":\"value\"}] where kind=fill (marked ← FILL). Batch 5: [{\"id\":\"e5\",\"text\":\"a@b.com\"},{\"id\":\"e7\",\"text\":\"Secret123\"},{\"id\":\"e22\"}] (fills+submit in 1 call). Custom ARIA combobox (React Select): click combobox [eXX] then click option [eYY] (role=option) — both are click kind. Elements include offscreen/shadow/iframe. Avoid fetch.",
   parameters: Type.Object({
     actions: Type.Array(
       Type.Object({
         id: Type.String({ description: "Element id e1..e250 or scroll_down/scroll_up/wait" }),
         text: Type.Optional(Type.String({ description: "Text for fill only" })),
       }),
-      { description: "Batch 1-3" }
+      { description: "Batch 1-5 (v1.2: was 3, now 5 for Dummy 5 + Payment 4)" }
     ),
   }),
   async execute(_id, params) {
