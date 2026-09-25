@@ -2,6 +2,7 @@
  * Tool definitions — website-agnostic: snapshot + act + live text for any site
  */
 
+import { stat, readFile } from "node:fs/promises";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Browser, type Snapshot } from "./browser.js";
@@ -22,17 +23,32 @@ export const browserLaunchTool = defineTool({
   description:
     "Launch Playwright Chromium headed, goto URL, wait networkidle. Returns 12k full-page snapshot (text incl. offscreen, incl. shadow DOM + iframe) + element table with y/onscreen/frame hints. Offscreen/shadow/iframe elements are clickable (auto scrollIntoView). For content beyond 12k use browser_text. Use ONLY these browser tools, not fetch.",
   parameters: Type.Object({
-    url: Type.String({ description: "URL to open" }),
+    url: Type.String({
+      description: "URL to open (http/https only — file/data/javascript blocked)",
+    }),
     headed: Type.Optional(Type.Boolean({ description: "Show headed window (default true)" })),
+    timeout: Type.Optional(
+      Type.Number({ description: "Navigation timeout ms (default 30000, max 60000)" })
+    ),
   }),
   async execute(_id, params) {
-    if (browser) { try { await browser.close(); } catch {} browser = null; }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+      browser = null;
+    }
     browser = new Browser();
-    const snap = await browser.launch(params.url, params.headed ?? true);
+    const snap = await browser.launch(params.url, params.headed ?? true, params.timeout ?? 30000);
     lastSnapshot = snap;
     return {
       content: [{ type: "text", text: formatSnapshot(snap) }],
-      details: { url: snap.url, title: snap.title, actions: snap.actions.length, fingerprint: snap.fingerprint },
+      details: {
+        url: snap.url,
+        title: snap.title,
+        actions: snap.actions.length,
+        fingerprint: snap.fingerprint,
+      },
     };
   },
 });
@@ -41,7 +57,8 @@ export const browserLaunchTool = defineTool({
 export const browserSnapshotTool = defineTool({
   name: "browser_snapshot",
   label: "Browser Snapshot",
-  description: "Re-observe full page atomically (one evaluate). Returns updated 12k text + element table.",
+  description:
+    "Re-observe full page atomically (one evaluate). Returns updated 12k text + element table.",
   parameters: Type.Object({}),
   async execute() {
     const b = getBrowser();
@@ -59,7 +76,7 @@ export const browserActTool = defineTool({
   name: "browser_act",
   label: "Browser Act (batched)",
   description:
-    "Execute 1-5 actions as batch then auto re-observe once. Use ONLY this for clicks AND fills. For fills: browser_act [{\"id\":\"eXX\",\"text\":\"value\"}] where kind=fill (marked ← FILL). Batch 5: [{\"id\":\"e5\",\"text\":\"a@b.com\"},{\"id\":\"e7\",\"text\":\"Secret123\"},{\"id\":\"e22\"}] (fills+submit in 1 call). Custom ARIA combobox (React Select): click combobox [eXX] then click option [eYY] (role=option) — both are click kind. Elements include offscreen/shadow/iframe. Avoid fetch.",
+    'Execute 1-5 actions as batch then auto re-observe once. Use ONLY this for clicks AND fills. For fills: browser_act [{"id":"eXX","text":"value"}] where kind=fill (marked ← FILL). Batch 5: [{"id":"e5","text":"a@b.com"},{"id":"e7","text":"Secret123"},{"id":"e22"}] (fills+submit in 1 call). Custom ARIA combobox (React Select): click combobox [eXX] then click option [eYY] (role=option) — both are click kind. Elements include offscreen/shadow/iframe. Avoid fetch.',
   parameters: Type.Object({
     actions: Type.Array(
       Type.Object({
@@ -75,14 +92,43 @@ export const browserActTool = defineTool({
     const snap = lastSnapshot;
     for (const a of params.actions) {
       const action = snap.actions.find((x: any) => x.id === a.id);
-      const target = action ?? (["scroll_down", "scroll_up", "wait"].includes(a.id) ? { id: a.id, kind: a.id.startsWith("scroll") ? "scroll" : "wait", delta: a.id === "scroll_down" ? 560 : -560 } : null);
-      if (!target) throw new Error(`Unknown ${a.id}. Have: ${snap.actions.slice(0, 30).map((x: any) => `${x.id}:${x.label.slice(0,25)}`).join(", ")}`);
+      const target =
+        action ??
+        (["scroll_down", "scroll_up", "wait"].includes(a.id)
+          ? {
+              id: a.id,
+              kind: a.id.startsWith("scroll") ? "scroll" : "wait",
+              delta: a.id === "scroll_down" ? 560 : -560,
+            }
+          : null);
+      if (!target)
+        throw new Error(
+          `Unknown ${a.id}. Have: ${snap.actions
+            .slice(0, 30)
+            .map((x: any) => `${x.id}:${x.label.slice(0, 25)}`)
+            .join(", ")}`
+        );
       await b.act(target, snap, a.text);
     }
     const next = await b.observe();
     lastSnapshot = next;
+    // Toggle feedback — compare checkbox/radio checked before/after for diff hint
+    let diffNote = "";
+    try {
+      const diffs: string[] = [];
+      for (const aid of params.actions) {
+        const before: any = snap.actions.find((x: any) => x.id === aid.id);
+        if (!before || before.checked === undefined) continue;
+        const after: any = next.actions.find((x: any) => x.node === before.node);
+        if (after && String(before.checked) !== String(after.checked)) {
+          diffs.push(`${aid.id} "${before.label}" checked: ${before.checked} → ${after.checked}`);
+        }
+      }
+      if (diffs.length) diffNote = "\n\n[Toggle feedback]\n" + diffs.join("\n");
+    } catch {}
+    const text = formatSnapshot(next) + diffNote;
     return {
-      content: [{ type: "text", text: formatSnapshot(next) }],
+      content: [{ type: "text", text }],
       details: { executed: params.actions.map((a: any) => a.id), url: next.url },
     } as any;
   },
@@ -92,36 +138,46 @@ export const browserActTool = defineTool({
 export const browserHoverTool = defineTool({
   name: "browser_hover",
   label: "Browser Hover",
-  description: "Hover over element to reveal transient dropdown/loader (1-sec spinner, hover menus). Uses mouseover/mouseenter. For dropdown whose element disappears on inspect, hover then quickly browser_snapshot.",
+  description:
+    "Hover over element to reveal transient dropdown/loader (1-sec spinner, hover menus). Uses mouseover/mouseenter. For dropdown whose element disappears on inspect, hover then quickly browser_snapshot.",
   parameters: Type.Object({
     id: Type.String({ description: "Element id e1..e250 to hover" }),
   }),
   async execute(_id: any, params: any) {
     const b = getBrowser();
-    const snap = lastSnapshot ?? await b.observe();
-    const action = snap.actions.find((x:any)=>x.id===params.id);
+    const snap = lastSnapshot ?? (await b.observe());
+    const action = snap.actions.find((x: any) => x.id === params.id);
     if (!action) throw new Error(`Unknown ${params.id}`);
     await b.hover(action);
     const next = await b.observe();
     lastSnapshot = next;
-    return { content: [{ type: "text", text: formatSnapshot(next) }], details: { hovered: params.id } } as any;
+    return {
+      content: [{ type: "text", text: formatSnapshot(next) }],
+      details: { hovered: params.id },
+    } as any;
   },
 });
 
 export const browserWaitTool = defineTool({
   name: "browser_wait",
   label: "Browser Wait",
-  description: "Wait for transient content: timeout ms or waitForSelector. Use for 1-sec Spin Loader that disappears, or waiting for dropdown to appear after hover. Do not loop scroll.",
+  description:
+    "Wait for transient content: timeout ms or waitForSelector. Use for 1-sec Spin Loader that disappears, or waiting for dropdown to appear after hover. Do not loop scroll.",
   parameters: Type.Object({
     timeout: Type.Optional(Type.Number({ description: "Ms to wait (default 1000, max 5000)" })),
-    selector: Type.Optional(Type.String({ description: "CSS selector to wait for visible (e.g. \"[role=option]\")" })),
+    selector: Type.Optional(
+      Type.String({ description: 'CSS selector to wait for visible (e.g. "[role=option]")' })
+    ),
   }),
   async execute(_id: any, params: any) {
     const b = getBrowser();
     await b.waitFor(params.timeout ?? 1000, params.selector);
     const snap = await b.observe();
     lastSnapshot = snap;
-    return { content: [{ type: "text", text: formatSnapshot(snap) }], details: { waited: params.timeout ?? 1000 } } as any;
+    return {
+      content: [{ type: "text", text: formatSnapshot(snap) }],
+      details: { waited: params.timeout ?? 1000 },
+    } as any;
   },
 });
 
@@ -137,14 +193,19 @@ export const browserExtractTool = defineTool({
   }),
   async execute(_id: any, params: any) {
     const b = getBrowser();
-    const snap = lastSnapshot ?? await b.observe();
+    const snap = lastSnapshot ?? (await b.observe());
     if (params.target) {
       const el = snap.actions.find((x: any) => x.id === params.target);
       if (!el) throw new Error(`No ${params.target}`);
       const guard = (snap.guards as any)[el.node];
       const scopeText = guard?.[13] ?? "";
       return {
-        content: [{ type: "text", text: `EXTRACT ${params.target} (${el.label})\nrole=${el.role} kind=${el.kind} y=${el.rect?.y}\n--- scope (up to 6k) ---\n${scopeText.slice(0, 6000)}\n--- snapshot text ---\n${snap.text.slice(0, 6000)}` }],
+        content: [
+          {
+            type: "text",
+            text: `EXTRACT ${params.target} (${el.label})\nrole=${el.role} kind=${el.kind} y=${el.rect?.y}\n--- scope (up to 6k) ---\n${scopeText.slice(0, 6000)}\n--- snapshot text ---\n${snap.text.slice(0, 6000)}`,
+          },
+        ],
         details: { id: params.target, label: el.label },
       } as any;
     }
@@ -161,12 +222,25 @@ export const browserTextTool = defineTool({
   name: "browser_text",
   label: "Browser Text",
   description:
-    "Live full-page innerText reader for any website and any length. Runs page.evaluate(() => document.body.innerText) live. Modes: no params → head (12k); {query:\"<phrase>\"} → context around match; {offset, limit} → pagination (offset supports negative for bottom); {blockIndex:N} → Nth block split by blank lines (1-based, website-agnostic). Use for bottom disclaimers, long articles, or when snapshot is truncated. Do not use fetch/web_search for live page content.",
+    'Live full-page innerText reader for any website and any length. Runs page.evaluate(() => document.body.innerText) live. Modes: no params → head (12k); {query:"<phrase>"} → context around match; {offset, limit} → pagination (offset supports negative for bottom); {blockIndex:N} → Nth block split by blank lines (1-based, website-agnostic). Use for bottom disclaimers, long articles, or when snapshot is truncated. Do not use fetch/web_search for live page content.',
   parameters: Type.Object({
     query: Type.Optional(Type.String({ description: "Substring to search live full text" })),
-    offset: Type.Optional(Type.Number({ description: "Char offset into full innerText; negative counts from end (e.g. -5000 for bottom)" })),
-    limit: Type.Optional(Type.Number({ description: "Chars to return (default 12000 for head, 3000 for query context)" })),
-    blockIndex: Type.Optional(Type.Number({ description: "1-based block index split by blank lines (generic, no site anchor)" })),
+    offset: Type.Optional(
+      Type.Number({
+        description:
+          "Char offset into full innerText; negative counts from end (e.g. -5000 for bottom)",
+      })
+    ),
+    limit: Type.Optional(
+      Type.Number({
+        description: "Chars to return (default 12000 for head, 3000 for query context)",
+      })
+    ),
+    blockIndex: Type.Optional(
+      Type.Number({
+        description: "1-based block index split by blank lines (generic, no site anchor)",
+      })
+    ),
   }),
   async execute(_id: any, params: any) {
     const b = getBrowser();
@@ -175,13 +249,26 @@ export const browserTextTool = defineTool({
       const idx = Number(params.blockIndex) - 1;
       if (idx < 0 || idx >= count) {
         return {
-          content: [{ type: "text", text: `Block ${params.blockIndex} out of range (have ${count}). First 5 blocks:\n${blocks.slice(0,5).map((s,i)=>`${i+1}. ${s.slice(0,400)}`).join("\n\n")}\n\nTry query or offset for bottom content.` }],
+          content: [
+            {
+              type: "text",
+              text: `Block ${params.blockIndex} out of range (have ${count}). First 5 blocks:\n${blocks
+                .slice(0, 5)
+                .map((s, i) => `${i + 1}. ${s.slice(0, 400)}`)
+                .join("\n\n")}\n\nTry query or offset for bottom content.`,
+            },
+          ],
           details: { count, requested: params.blockIndex },
         } as any;
       }
       const item = blocks[idx];
       return {
-        content: [{ type: "text", text: `Block ${params.blockIndex}/${count}:\n${item}\n\n--- All ${count} blocks: use query or different index ---` }],
+        content: [
+          {
+            type: "text",
+            text: `Block ${params.blockIndex}/${count}:\n${item}\n\n--- All ${count} blocks: use query or different index ---`,
+          },
+        ],
         details: { index: params.blockIndex, count, text: item },
       } as any;
     }
@@ -191,13 +278,30 @@ export const browserTextTool = defineTool({
     }
     if (params.offset !== undefined || params.limit !== undefined) {
       const { text, length } = await b.getChunk(params.offset ?? 0, params.limit ?? 12000);
-      const note = length > text.length ? ` (full page ${length} chars)` : "";
-      return { content: [{ type: "text", text: text + (text.length < length ? `\n\n[Chunk ${params.offset ?? 0}..${(params.offset ?? 0)+text.length} of ${length}]` : "") }], details: { length } } as any;
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              text +
+              (text.length < length
+                ? `\n\n[Chunk ${params.offset ?? 0}..${(params.offset ?? 0) + text.length} of ${length}]`
+                : ""),
+          },
+        ],
+        details: { length },
+      } as any;
     }
     const full = await b.getFullText();
     const head = full.slice(0, 12000);
-    const note = full.length > 12000 ? `\n\n[Full page ${full.length} chars, showing head 12k. Use query, offset/limit, or blockIndex for remainder.]` : "";
-    return { content: [{ type: "text", text: head + note }], details: { length: full.length } } as any;
+    const note =
+      full.length > 12000
+        ? `\n\n[Full page ${full.length} chars, showing head 12k. Use query, offset/limit, or blockIndex for remainder.]`
+        : "";
+    return {
+      content: [{ type: "text", text: head + note }],
+      details: { length: full.length },
+    } as any;
   },
 });
 
@@ -207,9 +311,55 @@ export const browserCloseTool = defineTool({
   description: "Close Playwright Chromium.",
   parameters: Type.Object({}),
   async execute() {
-    if (browser) { await browser.close(); browser = null; lastSnapshot = null; }
+    if (browser) {
+      await browser.close();
+      browser = null;
+      lastSnapshot = null;
+    }
     return { content: [{ type: "text", text: "Browser closed." }], details: {} };
   },
 });
 
-export function getLastSnapshot() { return lastSnapshot; }
+export const browserDownloadTool = defineTool({
+  name: "browser_download",
+  label: "Browser Download",
+  description:
+    "Stream back a download saved via browser_launch→click (acceptDownloads). No path → streams last download; with {path} streams that file. Returns head 50k chars (text) or base64 note for binary. Saved to tmpdir()/pi-browser-laya-downloads.",
+  parameters: Type.Object({
+    path: Type.Optional(
+      Type.String({ description: "Absolute path from DOWNLOAD banner; omit for last download" })
+    ),
+    maxBytes: Type.Optional(Type.Number({ description: "Max bytes to return (default 50000)" })),
+  }),
+  async execute(_id: any, params: any) {
+    const snap: any = lastSnapshot;
+    const targetPath: string | undefined = params.path ?? snap?.download?.path;
+    if (!targetPath)
+      throw new Error(
+        "No download yet. Trigger a download via browser_act click, then call browser_download. Download appears as DOWNLOAD banner in snapshot."
+      );
+    const s = await stat(targetPath).catch(() => null);
+    if (!s) throw new Error(`File not found: ${targetPath}`);
+    const max = Math.min(params.maxBytes ?? 50000, 200000);
+    const buf = await readFile(targetPath);
+    const slice = buf.slice(0, max);
+    const isText = slice
+      .slice(0, 1024)
+      .every((b: number) => b === 9 || b === 10 || b === 13 || (b >= 32 && b <= 126) || b >= 128);
+    const head = isText
+      ? slice.toString("utf8")
+      : slice.toString("base64").slice(0, max) + " (base64)";
+    const note =
+      buf.length > max
+        ? `\n\n[Truncated ${buf.length - max} bytes of ${buf.length} total. Use maxBytes or read file directly.]`
+        : "";
+    return {
+      content: [{ type: "text", text: `File: ${targetPath} (${s.size} bytes)\n${head}${note}` }],
+      details: { path: targetPath, size: s.size },
+    } as any;
+  },
+});
+
+export function getLastSnapshot() {
+  return lastSnapshot;
+}

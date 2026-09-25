@@ -12,6 +12,7 @@ import {
   browserExtractTool,
   browserTextTool,
   browserCloseTool,
+  browserDownloadTool,
 } from "./src/tools.js";
 
 export default function (pi: ExtensionAPI) {
@@ -23,6 +24,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserExtractTool);
   pi.registerTool(browserTextTool);
   pi.registerTool(browserCloseTool);
+  pi.registerTool(browserDownloadTool);
 
   pi.registerCommand("laya-help", {
     description: "Show general browser workflow",
@@ -40,6 +42,14 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
-    try { await (browserCloseTool as any).execute?.("shutdown", {}, null as any, null as any, null as any); } catch {}
+    try {
+      await (browserCloseTool as any).execute?.(
+        "shutdown",
+        {},
+        null as any,
+        null as any,
+        null as any
+      );
+    } catch {}
   });
 }

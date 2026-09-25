@@ -2,4 +2,6 @@ node_modules/
 extensions/browser-laya/node_modules/
 extensions/browser-laya/playwright-report/
 extensions/browser-laya/test-results/
-nul
+dist/
+coverage/
+playwright/.cache/

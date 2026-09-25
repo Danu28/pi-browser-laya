@@ -3,20 +3,47 @@
   "version": "1.0.0",
   "description": "General Playwright browser extension for pi — laya + jev ideas, 2-4 LLM calls for any site (single dep: playwright)",
   "type": "module",
-  "keywords": ["pi-package", "pi", "extension", "browser", "playwright", "laya", "jev"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "browser",
+    "playwright",
+    "laya",
+    "jev"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/Danu28/pi-browser-laya.git"
   },
   "dependencies": {
-    "playwright": "^1.48.0"
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "eslint": "^9.12.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3",
+    "typescript-eslint": "^8.70.1",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
   },
   "scripts": {
-    "postinstall": "npx playwright install chromium"
+    "postinstall": "npx playwright install chromium",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "pi": {
-    "extensions": ["./extensions/browser-laya/index.ts"]
+    "extensions": [
+      "./extensions/browser-laya/index.ts"
+    ]
   },
   "engines": {
     "node": ">=20"

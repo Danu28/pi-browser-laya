@@ -3,8 +3,10 @@
 **Goal:** `launch https://instantink.hpconnected.com/us/en/l/v2 headed, wait till load, get 4th FAQ details`
 
 ## Turn 1 — browser_launch
+
 Input: `{url:"https://instantink.hpconnected.com/us/en/l/v2", headed:true}`
 Output snapshot (compressed):
+
 ```
 URL: https://instantink.hpconnected.com/us/en/l/v2
 Title: HP Instant Ink
@@ -24,16 +26,21 @@ HP Instant Ink ... FAQ
 ```
 
 ## Turn 2 — browser_act (single batch)
+
 LLM plan JSON (laya typed decision — op+target one call):
+
 ```json
-{"actions":[{"id":"e42"}]}
+{ "actions": [{ "id": "e42" }] }
 ```
+
 Tool executes: `click e42` with freshness/visibility/occlusion guard → wait 120ms → auto re-observe.
 Output snapshot now shows `e42` expanded, guards[42].scope contains answer.
 
 ## Turn 3 — browser_extract
+
 Input: `{"target":"e42"}`
 Output:
+
 ```
 EXTRACT e42 (What if I cancel...)
 --- scope ---
@@ -42,4 +49,5 @@ You can cancel anytime from your account. If you cancel, ... [full answer]
 ```
 
 ## Done — 3 LLM calls total
+
 No 16-step loop. No extra snapshots. Batch + atomic observe is the compression.

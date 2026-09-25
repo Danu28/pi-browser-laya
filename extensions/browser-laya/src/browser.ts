@@ -4,20 +4,52 @@
  * Keeps jev-style atomic snapshot (one page.evaluate call) + laya batching
  */
 
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 export class StalePage extends Error {}
 
 export interface Snapshot {
-  url: string; title: string; w: number; h: number;
-  text: string; fullTextLength?: number; crossOriginSkipped?: number; actions: any[]; marker: any; page_key: any;
-  guards: Record<string, any>; omitted_actions: number;
-  scroll: { y: number; height: number }; fingerprint: string;
+  url: string;
+  title: string;
+  w: number;
+  h: number;
+  text: string;
+  fullTextLength?: number;
+  crossOriginSkipped?: number;
+  closedShadowSkipped?: number;
+  actions: any[];
+  marker: any;
+  page_key: any;
+  guards: Record<string, any>;
+  omitted_actions: number;
+  scroll: { y: number; height: number };
+  fingerprint: string;
   dialog?: { type: string; message: string; defaultValue?: string } | null;
+  download?: { filename: string; url: string; path: string } | null;
 }
 
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+/** Validate URL — only http/https allowed, reject file/data/javascript etc. */
+export function validateUrl(raw: string): URL {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`Invalid URL "${raw}" — must be absolute http(s) URL`);
+  }
+  if (!["http:", "https:"].includes(u.protocol)) {
+    throw new Error(
+      `Blocked protocol "${u.protocol}" — only http: and https: are allowed (got "${raw}")`
+    );
+  }
+  return u;
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 async function loadSnapshotJs(): Promise<string> {
   // try multiple resolutions for snapshot.js
@@ -26,9 +58,13 @@ async function loadSnapshotJs(): Promise<string> {
     new URL("../src/snapshot.js", import.meta.url),
   ];
   for (const u of candidates) {
-    try { return await readFile(u, "utf8"); } catch {}
+    try {
+      return await readFile(u, "utf8");
+    } catch {}
   }
-  try { return await readFile("extensions/browser-laya/src/snapshot.js", "utf8"); } catch {}
+  try {
+    return await readFile("extensions/browser-laya/src/snapshot.js", "utf8");
+  } catch {}
   return "";
 }
 
@@ -38,8 +74,11 @@ export class Browser {
   private page: any = null;
   private snapshotJs = "";
   private lastDialog: { type: string; message: string; defaultValue?: string } | null = null;
+  private lastDownload: { filename: string; url: string; path: string } | null = null;
 
-  async launch(url: string, headed = true): Promise<Snapshot> {
+  async launch(url: string, headed = true, timeoutMs = 30000): Promise<Snapshot> {
+    // URL validation — reject file/data/javascript/blob etc.
+    validateUrl(url);
     // lazy load playwright — single dependency user must install: npm i playwright && npx playwright install chromium
     let chromium: any;
     try {
@@ -52,7 +91,8 @@ export class Browser {
         chromium = req("playwright").chromium;
       } catch (e: any) {
         throw new Error(
-          "Playwright not installed. Run: npm install playwright && npx playwright install chromium\n" + e?.message
+          "Playwright not installed. Run: npm install playwright && npx playwright install chromium\n" +
+            e?.message
         );
       }
     }
@@ -68,16 +108,47 @@ export class Browser {
       viewport: { width: 1280, height: 900 },
       // keep headed rendering smooth
       deviceScaleFactor: 1,
+      acceptDownloads: true,
     });
     this.page = await this.context.newPage();
+    // Download interception — save to tmp/downloads and expose to snapshot banner
+    this.page.on("download", async (download: any) => {
+      try {
+        const filename = download.suggestedFilename() || "download";
+        const url = download.url();
+        const dir = join(tmpdir(), "pi-browser-laya-downloads");
+        await mkdir(dir, { recursive: true });
+        const path = join(dir, filename);
+        await download.saveAs(path);
+        this.lastDownload = { filename, url, path };
+      } catch {
+        try {
+          this.lastDownload = {
+            filename: download.suggestedFilename() || "download",
+            url: download.url(),
+            path: "",
+          };
+        } catch {}
+      }
+    });
     // Native dialog handler — auto-accept and expose to LLM (fixes P0 #1 dialog destroyed)
     this.page.on("dialog", async (dialog: any) => {
-      this.lastDialog = { type: dialog.type(), message: dialog.message(), defaultValue: dialog.defaultValue() };
-      try { await dialog.accept(dialog.defaultValue() || undefined); } catch { try { await dialog.dismiss(); } catch {} }
+      this.lastDialog = {
+        type: dialog.type(),
+        message: dialog.message(),
+        defaultValue: dialog.defaultValue(),
+      };
+      try {
+        await dialog.accept(dialog.defaultValue() || undefined);
+      } catch {
+        try {
+          await dialog.dismiss();
+        } catch {}
+      }
     });
 
-    // Navigate and wait till load completely
-    await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    // Navigate and wait till load completely (timeout param surfaces to LLM)
+    await this.page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     // Extra wait for dynamic content + network idle
     await this.page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
     await sleep(600);
@@ -88,10 +159,9 @@ export class Browser {
   async observe(): Promise<Snapshot> {
     if (!this.page) throw new Error("Browser not launched");
     const code = this.snapshotJs;
-    // page.evaluate runs snapshot.js atomically in browser context
+    // page.evaluate runs snapshot.js atomically in browser context — Function instead of eval (CSP/lint safe)
     const snap: any = await this.page.evaluate((js: string) => {
-      // eslint-disable-next-line no-eval
-      return eval(js);
+      return Function("return " + js)();
     }, code);
     if (!snap) throw new Error("snapshot failed — page has no body");
     // Normalize — ensure every action has role/label/kind so format.ts never crashes on padEnd (#padEnd bug)
@@ -104,12 +174,15 @@ export class Browser {
     snap.text = snap.text ?? "";
     snap.fullTextLength = snap.fullTextLength ?? snap.text.length;
     snap.crossOriginSkipped = snap.crossOriginSkipped ?? 0;
+    snap.closedShadowSkipped = snap.closedShadowSkipped ?? 0;
     snap.guards = snap.guards ?? {};
     snap.scroll = snap.scroll ?? { y: 0, height: 0 };
     snap.omitted_actions = snap.omitted_actions ?? 0;
     snap.fingerprint = snap.fingerprint ?? String(Date.now());
     snap.dialog = this.lastDialog;
     if (this.lastDialog) this.lastDialog = null; // consume once
+    snap.download = this.lastDownload;
+    if (this.lastDownload) this.lastDownload = null; // consume once (banner)
     return snap as Snapshot;
   }
 
@@ -123,8 +196,17 @@ export class Browser {
     if (!this.page) throw new Error("Browser not launched");
     return this.page.evaluate(() => {
       const raw = (document.body as any).innerText as string;
-      const blocks = raw.split(/\n\s*\n/).map((s: string) => s.trim()).filter(Boolean);
-      const list = blocks.length > 0 ? blocks : raw.split("\n").map(s=>s.trim()).filter(Boolean);
+      const blocks = raw
+        .split(/\n\s*\n/)
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+      const list =
+        blocks.length > 0
+          ? blocks
+          : raw
+              .split("\n")
+              .map((s) => s.trim())
+              .filter(Boolean);
       return { full: raw, blocks: list, count: list.length };
     });
   }
@@ -132,7 +214,8 @@ export class Browser {
   async findText(query: string, contextChars = 3000): Promise<string> {
     const full = await this.getFullText();
     const i = full.toLowerCase().indexOf(query.toLowerCase());
-    if (i < 0) return `Query "${query}" not found in full page (${full.length} chars). First 4000 chars:\n${full.slice(0,4000)}`;
+    if (i < 0)
+      return `Query "${query}" not found in full page (${full.length} chars). First 4000 chars:\n${full.slice(0, 4000)}`;
     return full.slice(Math.max(0, i - 600), i + contextChars);
   }
 
@@ -145,19 +228,25 @@ export class Browser {
   async hover(action: any): Promise<void> {
     if (!this.page) throw new Error("Browser not launched");
     await this.page.evaluate((nid: number) => {
-      const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid);
-      if(!n||!n.isConnected) throw new Error("hover node missing "+nid);
-      n.scrollIntoView({block:"center"});
-      n.dispatchEvent(new MouseEvent('mouseover', {bubbles:true, cancelable:true}));
-      n.dispatchEvent(new MouseEvent('mouseenter', {bubbles:true}));
-      n.dispatchEvent(new MouseEvent('mousemove', {bubbles:true}));
+      const c: any = (window as any).__layaFast;
+      const n = c?.nodes.get(nid);
+      if (!n || !n.isConnected)
+        throw new Error(
+          "hover node missing " + nid + " — StalePage: re-observe via browser_snapshot"
+        );
+      n.scrollIntoView({ block: "center" });
+      n.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true }));
+      n.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+      n.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
     }, action.node);
     await sleep(400);
   }
 
   async waitFor(timeoutMs = 1000, selector?: string): Promise<void> {
     if (selector) {
-      try { await this.page.waitForSelector(selector, { timeout: timeoutMs, state: 'visible' }); } catch {}
+      try {
+        await this.page.waitForSelector(selector, { timeout: timeoutMs, state: "visible" });
+      } catch {}
       return;
     }
     await sleep(timeoutMs);
@@ -173,29 +262,49 @@ export class Browser {
       await this.page.waitForTimeout(120).catch(() => sleep(120));
       return;
     }
-    if (action.id === "wait") { await sleep(500); return; }
+    if (action.id === "wait") {
+      await sleep(500);
+      return;
+    }
     // File upload — wire via DataTransfer dummy file (general, any site)
     if (action.kind === "file") {
-      if (!text) throw new Error("File input requires {\"id\":\""+action.id+"\",\"text\":\"/path/to/file\"} — provide local file path");
+      if (!text)
+        throw new Error(
+          'File input requires {"id":"' +
+            action.id +
+            '","text":"/path/to/file"} — provide local file path'
+        );
       const fileName = String(text).split(/[\\/]/).pop() || String(text);
-      await this.page.evaluate(({ nid, name }: any) => {
-        const c:any=(window as any).__layaFast; const n=c?.nodes.get(nid) as HTMLInputElement;
-        if(!n) throw new Error("file node missing "+nid);
-        n.scrollIntoView({block:"center"});
-        try {
-          const dt = new DataTransfer();
-          const file = new File(['dummy content for '+name], name, {type: 'application/octet-stream'});
-          dt.items.add(file);
-          (n as any).files = dt.files;
-          n.dispatchEvent(new Event('change', {bubbles:true}));
-          n.dispatchEvent(new Event('input', {bubbles:true}));
-        } catch(e:any){ throw new Error("file inject failed: "+e.message); }
-      }, { nid: action.node, name: fileName });
+      await this.page.evaluate(
+        ({ nid, name }: any) => {
+          const c: any = (window as any).__layaFast;
+          const n = c?.nodes.get(nid) as HTMLInputElement;
+          if (!n) throw new Error("file node missing " + nid);
+          n.scrollIntoView({ block: "center" });
+          try {
+            const dt = new DataTransfer();
+            const file = new File(["dummy content for " + name], name, {
+              type: "application/octet-stream",
+            });
+            dt.items.add(file);
+            (n as any).files = dt.files;
+            n.dispatchEvent(new Event("change", { bubbles: true }));
+            n.dispatchEvent(new Event("input", { bubbles: true }));
+          } catch (e: any) {
+            throw new Error("file inject failed: " + e.message);
+          }
+        },
+        { nid: action.node, name: fileName }
+      );
       await sleep(300);
       return;
     }
     // Keyboard press via text="Enter"/"Tab"/"Escape" on click targets
-    if (text && ["Enter","Tab","Escape","ArrowDown","ArrowUp"].includes(text) && action.kind==="click") {
+    if (
+      text &&
+      ["Enter", "Tab", "Escape", "ArrowDown", "ArrowUp"].includes(text) &&
+      action.kind === "click"
+    ) {
       await this.page.keyboard.press(text as any);
       await sleep(200);
       return;
@@ -204,39 +313,48 @@ export class Browser {
     const nodeId = action.node;
 
     if (action.kind === "fill" && text !== undefined) {
-      const ok = await this.page.evaluate(({ nid, val }: any) => {
-        const c: any = (window as any).__layaFast;
-        const n = c?.nodes.get(nid);
-        if (!n) throw new Error("node missing " + nid);
-        n.scrollIntoView({ block: "center", inline: "center" });
-        n.focus();
-        if (n.tagName === "INPUT" || n.tagName === "TEXTAREA") {
-          n.value = val;
-          n.dispatchEvent(new Event("input", { bubbles: true }));
-          n.dispatchEvent(new Event("change", { bubbles: true }));
-        } else if ((n as any).isContentEditable) {
-          n.textContent = val;
-          n.dispatchEvent(new Event("input", { bubbles: true }));
-        } else {
-          n.textContent = val;
-        }
-        return true;
-      }, { nid: nodeId, val: text });
+      const ok = await this.page.evaluate(
+        ({ nid, val }: any) => {
+          const c: any = (window as any).__layaFast;
+          const n = c?.nodes.get(nid);
+          if (!n)
+            throw new Error(
+              "node missing " + nid + " — StalePage: re-observe via browser_snapshot"
+            );
+          n.scrollIntoView({ block: "center", inline: "center" });
+          n.focus();
+          if (n.tagName === "INPUT" || n.tagName === "TEXTAREA") {
+            n.value = val;
+            n.dispatchEvent(new Event("input", { bubbles: true }));
+            n.dispatchEvent(new Event("change", { bubbles: true }));
+          } else if ((n as any).isContentEditable) {
+            n.textContent = val;
+            n.dispatchEvent(new Event("input", { bubbles: true }));
+          } else {
+            n.textContent = val;
+          }
+          return true;
+        },
+        { nid: nodeId, val: text }
+      );
       if (!ok) throw new Error("fill failed");
       await sleep(180);
       return;
     }
 
     if (action.kind === "select") {
-      await this.page.evaluate(({ nid, val }: any) => {
-        const c: any = (window as any).__layaFast;
-        const n: any = c?.nodes.get(nid);
-        if (!n) throw new Error("node missing");
-        n.value = val;
-        n.dispatchEvent(new Event("change", { bubbles: true }));
-        n.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-      }, { nid: nodeId, val: action.value });
+      await this.page.evaluate(
+        ({ nid, val }: any) => {
+          const c: any = (window as any).__layaFast;
+          const n: any = c?.nodes.get(nid);
+          if (!n) throw new Error("node missing — StalePage: re-observe via browser_snapshot");
+          n.value = val;
+          n.dispatchEvent(new Event("change", { bubbles: true }));
+          n.dispatchEvent(new Event("input", { bubbles: true }));
+          return true;
+        },
+        { nid: nodeId, val: action.value }
+      );
       await sleep(180);
       return;
     }
@@ -245,7 +363,8 @@ export class Browser {
     await this.page.evaluate((nid: number) => {
       const c: any = (window as any).__layaFast;
       const n = c?.nodes.get(nid);
-      if (!n) throw new Error("node missing " + nid);
+      if (!n)
+        throw new Error("node missing " + nid + " — StalePage: re-observe via browser_snapshot");
       n.scrollIntoView({ block: "center", inline: "center" });
       // slight delay for scroll
       return true;
@@ -256,16 +375,20 @@ export class Browser {
     await this.page.evaluate((nid: number) => {
       const c: any = (window as any).__layaFast;
       const n = c?.nodes.get(nid);
-      if (!n || !n.isConnected) throw new Error("stale node " + nid);
+      if (!n || !n.isConnected)
+        throw new Error("stale node " + nid + " — StalePage: re-observe via browser_snapshot");
       // visibility guard — mirrors snapshot's visible()
-      if (!n.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) throw new Error("element not visible");
+      if (!n.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))
+        throw new Error("element not visible");
       n.click();
       return true;
     }, nodeId);
 
     // Smart wait after click — check SPA navigation (url change) + networkidle
     await sleep(140);
-    try { await this.page.waitForLoadState("networkidle", { timeout: 2000 }); } catch {}
+    try {
+      await this.page.waitForLoadState("networkidle", { timeout: 2000 });
+    } catch {}
     // Detect SPA pushState url change
     try {
       const cur = this.page.url();
@@ -278,9 +401,17 @@ export class Browser {
   }
 
   async close() {
-    try { await this.page?.close(); } catch {}
-    try { await this.context?.close(); } catch {}
-    try { await this.browser?.close(); } catch {}
-    this.page = null; this.context = null; this.browser = null;
+    try {
+      await this.page?.close();
+    } catch {}
+    try {
+      await this.context?.close();
+    } catch {}
+    try {
+      await this.browser?.close();
+    } catch {}
+    this.page = null;
+    this.context = null;
+    this.browser = null;
   }
 }

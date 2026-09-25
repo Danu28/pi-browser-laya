@@ -19,13 +19,13 @@ Manual: `npm install && npx playwright install chromium`
 
 `laya` = one forward pass (~33 ms) for many typed decisions (`choice|score|noul`), Router per request, RLCD/proper scoring, hooks. Adapted as:
 
-| Laya | Here |
-|---|---|
-| Typed decisions | `operation:choice + target:choice[e1..250]` via TypeBox, one JSON |
+| Laya                        | Here                                                              |
+| --------------------------- | ----------------------------------------------------------------- |
+| Typed decisions             | `operation:choice + target:choice[e1..250]` via TypeBox, one JSON |
 | One pass for many questions | One LLM call = operation+target + batch 1-3 acts → one re-observe |
-| Router | Tool routing: `browser_act` vs `browser_text {query|offset|blockIndex}` |
-| Calibrated temps | Guards + fingerprint + `checkVisibility` before click |
-| Hooks | `session_shutdown` + prompt anti-pattern hook |
+| Router                      | Tool routing: `browser_act` vs `browser_text {query               | offset | blockIndex}` |
+| Calibrated temps            | Guards + fingerprint + `checkVisibility` before click             |
+| Hooks                       | `session_shutdown` + prompt anti-pattern hook                     |
 
 > **Disclaimer:** Not affiliated with `laya`; no `laya` pip package, no `convaiinnovations/laya` checkpoint, no TileLang fast path. See [laya repo](https://github.com/NandhaKishorM/laya) for original.
 
