@@ -25,22 +25,28 @@ describe("browser.ts — pi extension wiring", () => {
     expect(src).toContain("getChunk");
   });
 
-  it("tools register 9 pi tools and batch 1-5", () => {
+  it("tools register 11 pi tools and batch 1-5 + screenshot/pdf + session isolation", () => {
     expect(tools).toContain("browserLaunchTool");
     expect(tools).toContain("browserActTool");
     expect(tools).toContain("browserTextTool");
     expect(tools).toContain("browserDownloadTool");
+    expect(tools).toContain("browserScreenshotTool");
+    expect(tools).toContain("browserPdfTool");
     expect(tools).toContain("Batch 1-5");
+    expect(tools).toContain("WeakMap");
+    expect(tools).toContain("sessionManager");
+    expect(tools).toContain("closeAllBrowsers");
     expect(index).toContain("registerTool");
     expect(index).toContain("session_shutdown");
-    expect(index).toContain("browserDownloadTool");
+    expect(index).toContain("browserScreenshotTool");
+    expect(index).toContain("browserPdfTool");
   });
 
-  it("versions unified at 1.0.0 and playwright pinned", () => {
+  it("versions unified at 1.3.0 and playwright pinned", () => {
     const root = JSON.parse(readFileSync("package.json", "utf8"));
     const ext = JSON.parse(readFileSync("extensions/browser-laya/package.json", "utf8"));
-    expect(root.version).toBe("1.0.0");
-    expect(ext.version).toBe("1.0.0");
+    expect(root.version).toBe("1.3.0");
+    expect(ext.version).toBe("1.3.0");
     expect(root.dependencies.playwright).toBe("1.63.0");
     expect(ext.dependencies.playwright).toBe("1.63.0");
   });
@@ -74,6 +80,18 @@ describe("browser.ts — pi extension wiring", () => {
     expect(format).toMatch(/checked=.*a\.checked/);
     expect(readFileSync("extensions/browser-laya/src/tools.ts", "utf8")).toContain(
       "Toggle feedback"
+    );
+  });
+
+  it("screenshot/pdf and session isolation wiring", () => {
+    expect(src).toContain("screenshot");
+    expect(src).toContain("page.screenshot");
+    expect(src).toContain("page.pdf");
+    expect(readFileSync("extensions/browser-laya/src/snapshot.ts", "utf8")).toContain(
+      "PageSnapshot"
+    );
+    expect(readFileSync("extensions/browser-laya/src/snapshot.ts", "utf8")).toContain(
+      "SnapshotAction"
     );
   });
 

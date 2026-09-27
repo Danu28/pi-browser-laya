@@ -12,7 +12,7 @@ pi install git:github.com/Danu28/pi-browser-laya
 
 # verify
 pi packages:list
-pi tools:list  # browser_launch, browser_snapshot, browser_act, browser_extract, browser_text, browser_close
+pi tools:list  # browser_launch, browser_snapshot, browser_act, browser_extract, browser_text, browser_close, browser_download, browser_screenshot, browser_pdf
 ```
 
 Or try without installing:
@@ -44,14 +44,17 @@ npx playwright install chromium
 
 ## Tools (all website-agnostic)
 
-| Tool               | Purpose                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------- |
-| `browser_launch`   | Headed `chromium.launch` → `goto` → `networkidle` → 12k full-page snapshot + `e1..250` table with `y`   |
-| `browser_snapshot` | Re-observe (one evaluate)                                                                               |
-| `browser_act`      | Batched 1-3 actions, offscreen-aware (`scrollIntoView` auto)                                            |
-| `browser_extract`  | Guard `scope.innerText` for expanded elements                                                           |
-| `browser_text`     | Live `innerText` reader: `{query}`, `{offset,limit}`, `{blockIndex}`, or head — generic, no site anchor |
-| `browser_close`    | `browser.close()`                                                                                       |
+| Tool                 | Purpose                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------- |
+| `browser_launch`     | Headed `chromium.launch` → `goto` → `networkidle` → 12k ranked snapshot + `e1..400` table with `y`      |
+| `browser_snapshot`   | Re-observe (one evaluate, `query`/`compact`)                                                            |
+| `browser_act`        | Batched 1-5 actions, offscreen-aware (`scrollIntoView` auto)                                            |
+| `browser_extract`    | Guard `scope.innerText` for expanded elements                                                           |
+| `browser_text`       | Live `innerText` reader: `{query}`, `{offset,limit}`, `{blockIndex}`, or head — generic, no site anchor |
+| `browser_close`      | `browser.close()` (session-isolated)                                                                    |
+| `browser_download`   | Stream `acceptDownloads` file (50k head)                                                                |
+| `browser_screenshot` | PNG screenshot (viewport/fullPage) — vision verification                                                |
+| `browser_pdf`        | PDF export (A4, headless)                                                                               |
 
 ## Workflows (generic)
 
@@ -70,7 +73,9 @@ browser_text {blockIndex:10}          // nth block split by blank lines
 
 ## Design
 
-- One atomic `page.evaluate(snapshot.js)` (12k text + 250 indexed controls, offscreen incl. with `y`/`onscreen` hints)
+- One atomic `page.evaluate(snapshot.js)` (50k→ranked 12k text + 400 indexed controls, offscreen incl. with `y`/`onscreen` hints) — typed via `snapshot.ts` (`PageSnapshot`)
+- Session-isolated browsers via `WeakMap<sessionManager, Store>` (no cross-session leak)
+- `browser_screenshot` / `browser_pdf` for vision & archival
 - Offscreen clicks auto scroll via `nodes.get(node).scrollIntoView`
 - Batch `operation+target` in one JSON (laya typed-choice pattern)
 - Live `browser_text` for beyond-12k pages (generic `offset/blockIndex/query` pagination, no hardcoded site anchor)

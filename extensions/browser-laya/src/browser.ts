@@ -8,6 +8,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { PageSnapshot as _PageSnapshot } from "./snapshot.js";
 
 export class StalePage extends Error {}
 
@@ -17,7 +18,7 @@ export interface Snapshot {
   w: number;
   h: number;
   text: string;
-  fullTextLength?: number;
+  fullTextLength: number;
   ranked?: boolean;
   relevanceQuery?: string;
   crossOriginSkipped?: number;
@@ -58,14 +59,18 @@ function sleep(ms: number) {
 }
 
 async function loadSnapshotJs(): Promise<string> {
-  // try multiple resolutions for snapshot.js
+  // Prefer typed snapshot.ts source-of-truth if compiled, fallback to snapshot.js for page injection
   const candidates = [
     new URL("./snapshot.js", import.meta.url),
     new URL("../src/snapshot.js", import.meta.url),
+    new URL("./snapshot.ts", import.meta.url),
   ];
   for (const u of candidates) {
     try {
-      return await readFile(u, "utf8");
+      const raw = await readFile(u, "utf8");
+      // If reading snapshot.ts, strip TS-only exports (keep IIFE). Fall back to js if empty.
+      if (u.pathname.endsWith(".ts") && !raw.includes("((query)")) continue;
+      if (raw.trim().length > 100) return raw;
     } catch {}
   }
   try {
@@ -440,6 +445,18 @@ export class Browser {
     try {
       await this.page.waitForTimeout(50);
     } catch {}
+  }
+
+  async screenshot(fullPage = false): Promise<Buffer> {
+    if (!this.page) throw new Error("Browser not launched");
+    return this.page.screenshot({ fullPage, type: "png" });
+  }
+
+  async pdf(): Promise<Buffer> {
+    if (!this.page) throw new Error("Browser not launched");
+    if (typeof this.page.pdf !== "function")
+      throw new Error("PDF only supported in headless Chromium — launch with headed:false");
+    return this.page.pdf({ format: "A4" });
   }
 
   async close() {

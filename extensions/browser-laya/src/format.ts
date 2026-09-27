@@ -1,6 +1,6 @@
 import type { Snapshot } from "./browser.js";
 
-export const FORMAT_VERSION = "1.2.0";
+export const FORMAT_VERSION = "1.3.0";
 
 export function formatSnapshot(snap: Snapshot, opts?: { compact?: boolean }): string {
   const compact = opts?.compact ?? snap.actions.length > 250;

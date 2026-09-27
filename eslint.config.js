@@ -36,6 +36,13 @@ export default tseslint.config(
     },
   },
   {
+    files: ["extensions/browser-laya/src/snapshot.ts"],
+    rules: {
+      "@typescript-eslint/no-unused-vars": "off",
+      "no-unused-vars": "off",
+    },
+  },
+  {
     files: ["**/*.ts"],
     languageOptions: {
       ecmaVersion: 2022,

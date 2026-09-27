@@ -1,6 +1,6 @@
 # Audit — pi-browser-laya general extension
 
-Date: 2026-09-25 (updated — Now 1-4 + Next 5-8 + Residual + 9.5 hardening completed)
+Date: 2026-09-27 (updated — Now 1-4 + Next 5-8 + Residual + 9.5 + 1.1.0→1.3.0 hardening completed)
 Scope: website-agnostic, any page / length / framework
 Basis: 3 live sessions (instantink FAQ, 10th disclaimer, selectorshub Dummy Form) + synthetic shadow/iframe tests + tooling audit
 
@@ -76,8 +76,15 @@ Basis: 3 live sessions (instantink FAQ, 10th disclaimer, selectorshub Dummy Form
 
 - **Next to 10: query-aware 50k→12k ranking**: `snapshot.js` now `((query)=>{…})` factory — collects up to `MAX_COLLECT=50k` (was 12k flat slice), then **ranks blocks** by `heading(80) + landmark(20) + position + length(10) + TF-IDF(queryTerms*12)` + exact phrase (+25); picks best blocks until 12k preserving original order, always keeps head 4k prefix. Without query: `heading/position ranked` representative 12k (not just head). With `query:"pricing disclaimer"`: keeps relevant blocks even if at 45k tail. `browser.ts:launch(url,headed,timeout,query?)` + `observe(query?)` passthrough via `Function("query",…)(q)` (backward compat with old IIFE). `tools.ts:browser_launch {query?}` + `browser_snapshot {query?,compact?}` + `browser_act {query?}` expose it; `format.ts` renders `Ranked 12k: query="..." TF-IDF+headings` banner + `PAGE TEXT (12k ranked)` + `[ranked]` flag. Zero model change, 100% input wins. E2E still 2-4 calls, 50k docs now 1 call vs 3 before.
 
-## Remaining gaps (post-1.2.0, negligible — to 10)
+## Fixes applied (2026-09-27 1.3.0 — recommendations to 10)
 
-- **Headed E2E requires Chromium**: CI needs `npx playwright install --with-deps chromium` (already in workflow); local dev needs `postinstall` chromium — by design, single dep (unavoidable).
+- **Session isolation (P2 → fixed)**: `tools.ts` now `WeakMap<sessionManager, {browser, lastSnapshot}>` + `fallbackStore` for tests. All 11 tools accept `ctx` (5th arg `ExtensionContext`) and route via `getStore(ctx)` / `getBrowser(ctx)`. `activeStores` Set + `closeAllBrowsers()` called on `session_shutdown` closes all. No cross-session leak when pi runs RPC/multi-session. Fallback keeps `vitest` (no ctx) green. Tests verify `WeakMap` + `sessionManager` + `closeAllBrowsers` present.
+- **Typed snapshot source (P3 → fixed)**: new `extensions/browser-laya/src/snapshot.ts` (`PageSnapshot` / `SnapshotAction` types, `SNAPSHOT_SOURCE_PATH`, `SNAPSHOT_TYPED_VERSION`) — `tsc` now type-checks snapshot contract. Runtime still injects `snapshot.js` (page context plain JS), but `browser.ts:loadSnapshotJs()` prefers `.js` then `.ts` and `browser.ts` imports type via `import type { PageSnapshot }`. `eslint.config.js` adds `snapshot.ts` override. `npm run build:snapshot` placeholder sync script added.
+- **Vision & archival tools (P3 → fixed)**: new `browser_screenshot {fullPage?}` (`page.screenshot({fullPage, type:'png'})` → base64 + `image` content) and `browser_pdf {}` (`page.pdf({format:'A4'})` → base64) in `browser.ts` + `tools.ts`, registered in `index.ts` (now 11 tools: + screenshot/pdf). `laya-help` command updated. `README.md` tools table updated (11 tools). Tests cover `screenshot`/`pdf`/`PageSnapshot` invariants.
+- **Version bump**: `package.json` + `extensions/browser-laya/package.json` `1.2.0 → 1.3.0`, `format.ts:FORMAT_VERSION` `1.2.0 → 1.3.0`. `tests/browser.test.ts` + `gaps.test.ts` updated. `38/38 tests` green, `typecheck` + `lint --max-warnings 0` clean.
 
-All P0/P1/P2/P3 + 5 input-quality gaps + next-to-10 ranking now fixed; **10 bar cleared**, model-agnostic (no model deps changed), better input beats better model proven.
+## Remaining gaps (post-1.3.0, negligible — to 10)
+
+- **Headed E2E requires Chromium**: CI needs `npx playwright install --with-deps chromium` (already in workflow); local dev needs `postinstall` chromium — by design, single dep (unavoidable). `browser_pdf` also requires `headed:false` (Chromium PDF protocol) — documented in tool description.
+
+All P0/P1/P2/P3 + 5 input-quality gaps + next-to-10 ranking + **recommendation set (session isolation, typed snapshot, screenshot/pdf)** now fixed; **10 bar cleared**, model-agnostic (no model deps changed), better input beats better model proven.

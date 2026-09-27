@@ -76,7 +76,7 @@ describe("gaps 1.1.0 — input quality to 9.8", () => {
   });
 
   it("gap3: prompt versioning + compact mode", () => {
-    expect(FORMAT_VERSION).toBe("1.2.0");
+    expect(FORMAT_VERSION).toBe("1.3.0");
     const snap = makeSnap();
     const out = formatSnapshot(snap);
     expect(out).toContain(`Format: v${FORMAT_VERSION}`);

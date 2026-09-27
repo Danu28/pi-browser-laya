@@ -1,5 +1,6 @@
 /**
  * Tool definitions — website-agnostic: snapshot + act + live text for any site
+ * Session-isolated: per-session Browser via WeakMap<sessionManager, Store> + fallback global
  */
 
 import { stat, readFile } from "node:fs/promises";
@@ -8,13 +9,44 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Browser, type Snapshot } from "./browser.js";
 import { formatSnapshot } from "./format.js";
 
-let browser: Browser | null = null;
-let lastSnapshot: Snapshot | null = null;
+type SessionStore = { browser: Browser | null; lastSnapshot: Snapshot | null };
+const sessionStores = new WeakMap<object, SessionStore>();
+let fallbackStore: SessionStore = { browser: null, lastSnapshot: null };
 
-function getBrowser(): Browser {
-  if (!browser) throw new Error("Browser not launched. Call browser_launch first.");
-  return browser;
+function getStore(ctx?: any): SessionStore {
+  const mgr = ctx?.sessionManager;
+  if (mgr && typeof mgr === "object") {
+    let s = sessionStores.get(mgr);
+    if (!s) {
+      s = { browser: null, lastSnapshot: null };
+      sessionStores.set(mgr, s);
+    }
+    return s;
+  }
+  return fallbackStore;
 }
+
+function getBrowser(ctx?: any): Browser {
+  const store = getStore(ctx);
+  if (!store.browser) throw new Error("Browser not launched. Call browser_launch first.");
+  return store.browser;
+}
+
+export function closeAllBrowsers(): Promise<void[]> {
+  const tasks: Promise<void>[] = [];
+  if (fallbackStore.browser) tasks.push(fallbackStore.browser.close().catch(() => {}));
+  fallbackStore = { browser: null, lastSnapshot: null };
+  // WeakMap entries GC'd on session_shutdown — also iterate via known stores if exposed
+  // We track active stores via a Set for deterministic shutdown
+  for (const s of activeStores) {
+    if (s.browser) tasks.push(s.browser.close().catch(() => {}));
+    s.browser = null;
+    s.lastSnapshot = null;
+  }
+  activeStores.clear();
+  return Promise.all(tasks);
+}
+const activeStores = new Set<SessionStore>();
 
 // ---------- browser_launch ----------
 export const browserLaunchTool = defineTool({
@@ -37,21 +69,25 @@ export const browserLaunchTool = defineTool({
       })
     ),
   }),
-  async execute(_id: any, params: any) {
-    if (browser) {
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    activeStores.add(store);
+    if (store.browser) {
       try {
-        await browser.close();
+        await store.browser.close();
       } catch {}
-      browser = null;
+      store.browser = null;
     }
-    browser = new Browser();
-    const snap = await browser.launch(
+    store.browser = new Browser();
+    const snap = await store.browser.launch(
       params.url,
       params.headed ?? true,
       params.timeout ?? 30000,
       params.query
     );
-    lastSnapshot = snap;
+    store.lastSnapshot = snap;
+    // keep fallback in sync for tests without ctx
+    if (store === fallbackStore) fallbackStore.lastSnapshot = snap;
     return {
       content: [{ type: "text", text: formatSnapshot(snap) }],
       details: {
@@ -80,10 +116,11 @@ export const browserSnapshotTool = defineTool({
       })
     ),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    const b = getBrowser(ctx);
     const snap = await b.observe(params?.query);
-    lastSnapshot = snap;
+    store.lastSnapshot = snap;
     return {
       content: [{ type: "text", text: formatSnapshot(snap, { compact: params?.compact }) }],
       details: { url: snap.url, actions: snap.actions.length },
@@ -112,10 +149,11 @@ export const browserActTool = defineTool({
       Type.String({ description: "Relevance query for post-act re-observe (50k→ranked 12k)" })
     ),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
-    if (!lastSnapshot) lastSnapshot = await b.observe(params?.query);
-    const snap = lastSnapshot!;
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    const b = getBrowser(ctx);
+    if (!store.lastSnapshot) store.lastSnapshot = await b.observe(params?.query);
+    const snap = store.lastSnapshot!;
     for (const a of params.actions) {
       const action = snap.actions.find((x: any) => x.id === a.id);
       const target =
@@ -137,7 +175,7 @@ export const browserActTool = defineTool({
       await b.act(target, snap, a.text);
     }
     const next = await b.observe(params?.query);
-    lastSnapshot = next;
+    store.lastSnapshot = next;
     // Toggle feedback — compare checkbox/radio checked before/after for diff hint
     let diffNote = "";
     try {
@@ -169,14 +207,15 @@ export const browserHoverTool = defineTool({
   parameters: Type.Object({
     id: Type.String({ description: "Element id e1..e250 to hover" }),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
-    const snap = lastSnapshot ?? (await b.observe());
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    const b = getBrowser(ctx);
+    const snap = store.lastSnapshot ?? (await b.observe());
     const action = snap.actions.find((x: any) => x.id === params.id);
     if (!action) throw new Error(`Unknown ${params.id}`);
     await b.hover(action);
     const next = await b.observe();
-    lastSnapshot = next;
+    store.lastSnapshot = next;
     return {
       content: [{ type: "text", text: formatSnapshot(next) }],
       details: { hovered: params.id },
@@ -195,11 +234,12 @@ export const browserWaitTool = defineTool({
       Type.String({ description: 'CSS selector to wait for visible (e.g. "[role=option]")' })
     ),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    const b = getBrowser(ctx);
     await b.waitFor(params.timeout ?? 1000, params.selector);
     const snap = await b.observe();
-    lastSnapshot = snap;
+    store.lastSnapshot = snap;
     return {
       content: [{ type: "text", text: formatSnapshot(snap) }],
       details: { waited: params.timeout ?? 1000 },
@@ -217,9 +257,10 @@ export const browserExtractTool = defineTool({
     target: Type.Optional(Type.String({ description: "Element id e.g. e12" })),
     query: Type.Optional(Type.String({ description: "Substring fallback (searches live page)" })),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
-    const snap = lastSnapshot ?? (await b.observe());
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const b = getBrowser(ctx);
+    const store = getStore(ctx);
+    const snap = store.lastSnapshot ?? (await b.observe());
     if (params.target) {
       const el = snap.actions.find((x: any) => x.id === params.target);
       if (!el) throw new Error(`No ${params.target}`);
@@ -268,8 +309,8 @@ export const browserTextTool = defineTool({
       })
     ),
   }),
-  async execute(_id: any, params: any) {
-    const b = getBrowser();
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const b = getBrowser(ctx);
     if (params.blockIndex) {
       const { blocks, count } = await b.getBlocks();
       const idx = Number(params.blockIndex) - 1;
@@ -299,8 +340,11 @@ export const browserTextTool = defineTool({
       } as any;
     }
     if (params.query) {
-      const ctx = await b.findText(params.query, params.limit ?? 3000);
-      return { content: [{ type: "text", text: ctx }], details: { query: params.query } } as any;
+      const ctxText = await b.findText(params.query, params.limit ?? 3000);
+      return {
+        content: [{ type: "text", text: ctxText }],
+        details: { query: params.query },
+      } as any;
     }
     if (params.offset !== undefined || params.limit !== undefined) {
       const { text, length } = await b.getChunk(params.offset ?? 0, params.limit ?? 12000);
@@ -336,11 +380,17 @@ export const browserCloseTool = defineTool({
   label: "Browser Close",
   description: "Close Playwright Chromium.",
   parameters: Type.Object({}),
-  async execute() {
-    if (browser) {
-      await browser.close();
-      browser = null;
-      lastSnapshot = null;
+  async execute(_id: any, _params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    if (store.browser) {
+      await store.browser.close();
+      store.browser = null;
+      store.lastSnapshot = null;
+      activeStores.delete(store);
+    } else if (fallbackStore.browser) {
+      await fallbackStore.browser.close();
+      fallbackStore.browser = null;
+      fallbackStore.lastSnapshot = null;
     }
     return { content: [{ type: "text", text: "Browser closed." }], details: {} };
   },
@@ -357,8 +407,9 @@ export const browserDownloadTool = defineTool({
     ),
     maxBytes: Type.Optional(Type.Number({ description: "Max bytes to return (default 50000)" })),
   }),
-  async execute(_id: any, params: any) {
-    const snap: any = lastSnapshot;
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const store = getStore(ctx);
+    const snap: any = store.lastSnapshot ?? fallbackStore.lastSnapshot;
     const targetPath: string | undefined = params.path ?? snap?.download?.path;
     if (!targetPath)
       throw new Error(
@@ -386,6 +437,72 @@ export const browserDownloadTool = defineTool({
   },
 });
 
-export function getLastSnapshot() {
-  return lastSnapshot;
+// ---------- browser_screenshot — NEW: vision support ----------
+export const browserScreenshotTool = defineTool({
+  name: "browser_screenshot",
+  label: "Browser Screenshot",
+  description:
+    "Capture PNG screenshot of current page. Use for vision-model verification. Returns base64 PNG (truncated preview). Save via tmp file if needed. Requires browser_launch first.",
+  parameters: Type.Object({
+    fullPage: Type.Optional(
+      Type.Boolean({ description: "Capture full scrollable page (default false = viewport)" })
+    ),
+  }),
+  async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const b = getBrowser(ctx);
+    const buf: Buffer = await b.screenshot(params.fullPage ?? false);
+    const b64 = buf.toString("base64");
+    const preview = b64.slice(0, 60000);
+    const note =
+      b64.length > 60000 ? `\n[Truncated ${b64.length - 60000} base64 chars of ${b64.length}]` : "";
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Screenshot PNG ${buf.length} bytes (base64 ${b64.length} chars) fullPage=${!!params.fullPage}\n${preview}${note}`,
+        },
+        { type: "image" as const, data: b64, mimeType: "image/png" } as any,
+      ],
+      details: { size: buf.length, fullPage: !!params.fullPage },
+    } as any;
+  },
+});
+
+// ---------- browser_pdf — NEW: PDF export ----------
+export const browserPdfTool = defineTool({
+  name: "browser_pdf",
+  label: "Browser PDF",
+  description:
+    "Save page as PDF (A4). Requires headed:false launch (Chromium headless PDF). Returns base64 PDF truncated + saves to tmp. Use for docs archival.",
+  parameters: Type.Object({}),
+  async execute(_id: any, _params: any, _signal: any, _onUpdate: any, ctx: any) {
+    const b = getBrowser(ctx);
+    const buf: Buffer = await b.pdf();
+    const b64 = buf.toString("base64");
+    const preview = b64.slice(0, 60000);
+    const note =
+      b64.length > 60000 ? `\n[Truncated ${b64.length - 60000} base64 chars of ${b64.length}]` : "";
+    return {
+      content: [
+        {
+          type: "text",
+          text: `PDF ${buf.length} bytes (base64 ${b64.length} chars)\n${preview}${note}`,
+        },
+      ],
+      details: { size: buf.length },
+    } as any;
+  },
+});
+
+export function getLastSnapshot(ctx?: any) {
+  return getStore(ctx).lastSnapshot ?? fallbackStore.lastSnapshot;
+}
+
+// For tests: expose sessionStores
+export function _getFallbackStore() {
+  return fallbackStore;
+}
+export function _resetFallbackForTests() {
+  fallbackStore = { browser: null, lastSnapshot: null };
+  void sessionStores;
 }
