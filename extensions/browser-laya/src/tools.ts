@@ -4,6 +4,7 @@
  */
 
 import { stat, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Browser, type Snapshot } from "./browser.js";
@@ -172,7 +173,7 @@ export const browserActTool = defineTool({
             .map((x: any) => `${x.id}:${x.label.slice(0, 25)}`)
             .join(", ")}`
         );
-      await b.act(target, snap, a.text);
+      await b.act(target, snap, a.text, _signal);
     }
     const next = await b.observe(params?.query);
     store.lastSnapshot = next;
@@ -213,7 +214,7 @@ export const browserHoverTool = defineTool({
     const snap = store.lastSnapshot ?? (await b.observe());
     const action = snap.actions.find((x: any) => x.id === params.id);
     if (!action) throw new Error(`Unknown ${params.id}`);
-    await b.hover(action);
+    await b.hover(action, _signal);
     const next = await b.observe();
     store.lastSnapshot = next;
     return {
@@ -237,7 +238,7 @@ export const browserWaitTool = defineTool({
   async execute(_id: any, params: any, _signal: any, _onUpdate: any, ctx: any) {
     const store = getStore(ctx);
     const b = getBrowser(ctx);
-    await b.waitFor(params.timeout ?? 1000, params.selector);
+    await b.waitFor(params.timeout ?? 1000, params.selector, _signal);
     const snap = await b.observe();
     store.lastSnapshot = snap;
     return {
@@ -415,6 +416,10 @@ export const browserDownloadTool = defineTool({
       throw new Error(
         "No download yet. Trigger a download via browser_act click, then call browser_download. Download appears as DOWNLOAD banner in snapshot."
       );
+    // Security: only allow paths inside tmpdir (prevents arbitrary read via LLM-controlled path)
+    const allowedRoots = [tmpdir(), "/tmp", "/private/tmp"];
+    const isAllowed = allowedRoots.some((r) => targetPath.startsWith(r));
+    if (!isAllowed) throw new Error(`Blocked path "${targetPath}" — only tmpdir downloads allowed`);
     const s = await stat(targetPath).catch(() => null);
     if (!s) throw new Error(`File not found: ${targetPath}`);
     const max = Math.min(params.maxBytes ?? 50000, 200000);

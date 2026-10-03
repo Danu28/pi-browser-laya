@@ -15,9 +15,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - run: npm run typecheck
-      - run: npm run lint -- --max-warnings 0
-      - run: npm run format:check
+      - name: fast checks (parallel)
+        run: npm run typecheck & npm run lint -- --max-warnings 0 & npm run format:check & wait
       - run: npm test # vitest node, headed:false (no UI); integration uses headed:false by default
         env:
           CI: true

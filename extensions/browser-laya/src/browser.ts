@@ -54,27 +54,39 @@ export function validateUrl(raw: string): URL {
   return u;
 }
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
+function sleep(ms: number, signal?: AbortSignal) {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Aborted"));
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        reject(signal.reason ?? new Error("Aborted"));
+      },
+      { once: true }
+    );
+  });
 }
 
+let cachedSnapshotJs: string | null = null;
 async function loadSnapshotJs(): Promise<string> {
-  // Prefer typed snapshot.ts source-of-truth if compiled, fallback to snapshot.js for page injection
-  const candidates = [
-    new URL("./snapshot.js", import.meta.url),
-    new URL("../src/snapshot.js", import.meta.url),
-    new URL("./snapshot.ts", import.meta.url),
-  ];
-  for (const u of candidates) {
-    try {
-      const raw = await readFile(u, "utf8");
-      // If reading snapshot.ts, strip TS-only exports (keep IIFE). Fall back to js if empty.
-      if (u.pathname.endsWith(".ts") && !raw.includes("((query)")) continue;
-      if (raw.trim().length > 100) return raw;
-    } catch {}
-  }
+  if (cachedSnapshotJs && cachedSnapshotJs.length > 100) return cachedSnapshotJs;
+  // Single source-of-truth: snapshot.js co-located with browser.ts; fallback to repo root path for pi --extension mode
+  const primary = new URL("./snapshot.js", import.meta.url);
   try {
-    return await readFile("extensions/browser-laya/src/snapshot.js", "utf8");
+    const raw = await readFile(primary, "utf8");
+    if (raw.trim().length > 100) {
+      cachedSnapshotJs = raw;
+      return raw;
+    }
+  } catch {}
+  try {
+    const raw = await readFile("extensions/browser-laya/src/snapshot.js", "utf8");
+    if (raw.trim().length > 100) {
+      cachedSnapshotJs = raw;
+      return raw;
+    }
   } catch {}
   return "";
 }
@@ -272,7 +284,7 @@ export class Browser {
     return { text: full.slice(start, start + limit), length: full.length };
   }
 
-  async hover(action: any): Promise<void> {
+  async hover(action: any, signal?: AbortSignal): Promise<void> {
     if (!this.page) throw new Error("Browser not launched");
     await this.page.evaluate((nid: number) => {
       const c: any = (window as any).__layaFast;
@@ -286,31 +298,31 @@ export class Browser {
       n.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
       n.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
     }, action.node);
-    await sleep(400);
+    await sleep(400, signal);
   }
 
-  async waitFor(timeoutMs = 1000, selector?: string): Promise<void> {
+  async waitFor(timeoutMs = 1000, selector?: string, signal?: AbortSignal): Promise<void> {
     if (selector) {
       try {
         await this.page.waitForSelector(selector, { timeout: timeoutMs, state: "visible" });
       } catch {}
       return;
     }
-    await sleep(timeoutMs);
+    await sleep(timeoutMs, signal);
   }
 
-  async act(action: any, _page: Snapshot, text?: string): Promise<void> {
+  async act(action: any, _page: Snapshot, text?: string, signal?: AbortSignal): Promise<void> {
     if (!this.page) throw new Error("Browser not launched");
 
     if (action.id === "scroll_down" || action.id === "scroll_up") {
       const delta = action.delta ?? (action.id === "scroll_down" ? 560 : -560);
       await this.page.evaluate((d: number) => window.scrollBy(0, d), delta);
-      await sleep(180);
-      await this.page.waitForTimeout(120).catch(() => sleep(120));
+      await sleep(180, signal);
+      await this.page.waitForTimeout(120).catch(() => sleep(120, signal));
       return;
     }
     if (action.id === "wait") {
-      await sleep(500);
+      await sleep(500, signal);
       return;
     }
     // File upload — wire via DataTransfer dummy file (general, any site)
@@ -343,7 +355,7 @@ export class Browser {
         },
         { nid: action.node, name: fileName }
       );
-      await sleep(300);
+      await sleep(300, signal);
       return;
     }
     // Keyboard press via text="Enter"/"Tab"/"Escape" on click targets
@@ -353,7 +365,7 @@ export class Browser {
       action.kind === "click"
     ) {
       await this.page.keyboard.press(text as any);
-      await sleep(200);
+      await sleep(200, signal);
       return;
     }
 
@@ -385,7 +397,7 @@ export class Browser {
         { nid: nodeId, val: text }
       );
       if (!ok) throw new Error("fill failed");
-      await sleep(180);
+      await sleep(180, signal);
       return;
     }
 
@@ -402,7 +414,7 @@ export class Browser {
         },
         { nid: nodeId, val: action.value }
       );
-      await sleep(180);
+      await sleep(180, signal);
       return;
     }
 
@@ -416,7 +428,7 @@ export class Browser {
       // slight delay for scroll
       return true;
     }, nodeId);
-    await sleep(80);
+    await sleep(80, signal);
 
     // Use page.evaluate click (most reliable for jev-style snapshot nodes)
     await this.page.evaluate((nid: number) => {
@@ -432,14 +444,14 @@ export class Browser {
     }, nodeId);
 
     // Smart wait after click — check SPA navigation (url change) + networkidle
-    await sleep(140);
+    await sleep(140, signal);
     try {
       await this.page.waitForLoadState("networkidle", { timeout: 2000 });
     } catch {}
     // Detect SPA pushState url change
     try {
       const cur = this.page.url();
-      if (cur !== _page.url) await sleep(300);
+      if (cur !== _page.url) await sleep(300, signal);
     } catch {}
     // Friendly stale check: if element still not visible after scroll, hint
     try {

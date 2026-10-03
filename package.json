@@ -32,7 +32,6 @@
   },
   "scripts": {
     "postinstall": "npx playwright install chromium",
-    "build:snapshot": "node -e \"import('fs').then(fs=>fs.copyFileSync('extensions/browser-laya/src/snapshot.js','extensions/browser-laya/src/snapshot.ts.bak'))\" && echo 'snapshot.js is source of truth; snapshot.ts holds types'",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --fix",
